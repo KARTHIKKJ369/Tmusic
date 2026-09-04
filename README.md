@@ -2,18 +2,30 @@
 
 A lightweight, blazing fast, and highly efficient terminal music player built in pure Go.
 
-Supports **FLAC**, **MP3**, **WAV**, and **OGG** with zero runtime dependencies (no `mpv`, `ffmpeg`, or `portaudio` installs required).
+Supports **FLAC**, **MP3**, **WAV**, and **OGG** with zero external runtime dependencies on **Windows**, **macOS**, and **Linux**.
 
 ---
 
-## ⚡ 1-Line Installation
+## ⚡ 1-Line Universal Installation
 
-**For macOS (Apple Silicon & Intel) & Linux:**
+### 🪟 Windows (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/KARTHIKKJ369/Tmusic/main/install.ps1 | iex
+```
+
+### 🍏 macOS (Apple Silicon & Intel) & 🐧 Linux
 ```bash
 curl -fsSL https://raw.githubusercontent.com/KARTHIKKJ369/Tmusic/main/install.sh | bash
 ```
 
-**Or via Go:**
+### 🔄 In-Place Self-Updating
+```bash
+muse -u
+# or
+muse update
+```
+
+### 🛠️ Via Go (All Platforms)
 ```bash
 go install github.com/KARTHIKKJ369/Tmusic/cmd/muse@latest
 ```
@@ -22,15 +34,15 @@ go install github.com/KARTHIKKJ369/Tmusic/cmd/muse@latest
 
 ## ✨ Features
 
-- 🚀 **Run From Anywhere**: Installed to `~/.local/bin/muse` — simply type `muse` in your terminal.
-- 🎼 **Multiple Formats**: Native decoding for `.flac`, `.mp3`, `.wav`, `.ogg`.
+- 🚀 **Run From Anywhere**: Installed to PATH — simply type `muse` anywhere in your terminal.
+- 🎼 **Native Codecs**: Pure Go decoders for `.flac`, `.mp3`, `.wav`, `.ogg`.
 - 📂 **One-Time Library Setup**: Configure your music folder once (`muse dir <path>`).
-- 🔀 **Smart De-clustered Shuffle**: Press **`s`** to instantly shuffle and jump directly to Now Playing.
+- 🔀 **Smart De-clustered Shuffle**: Press **`s`** to immediately shuffle and jump directly to Now Playing.
 - ⏭ **Direct Time Jumps & Percent Skips**:
   - Press **`0` - `9`** in Now Playing to jump to 0%, 10%, 20%, ..., 90% of the song.
   - Press **`g`** or **`:`** to jump to an exact timestamp (e.g. `1:30`, `90s`, or `50%`).
   - Press **`→` / `←`** (±5s) or **`Shift+→` / `Shift+←`** (±30s).
-- 🖼 **Embedded Album Art & Vinyl Disc**: Extracts embedded JPEG/PNG cover art and renders high-density **ANSI 24-bit TrueColor Half-Blocks (`▀`)** in the center of Now Playing, with procedural animated Vinyl Disc artwork fallback.
+- 🖼 **HD ANSI TrueColor Album Art**: Extracts embedded JPEG/PNG cover art and renders high-definition **24-bit TrueColor Half-Blocks (`▀`)** centered above song metadata, with animated Vinyl Disc fallback.
 - ❤️ **Favourites & Playlists**: Toggle favourites with persistent hearts (`♥`), manage custom playlists with dual-pane browsing.
 - 🔍 **Instant Fuzzy Search**: Real-time live filtering across titles, artists, and albums (`/`).
 
@@ -44,7 +56,8 @@ muse dir <path>           # Set music directory and index tracks
 muse rescan               # Force rescan and refresh library cache
 muse info                 # Show configuration and library statistics
 muse play [query]         # Launch and immediately play matching/random track
-muse install              # Re-install 'muse' command to ~/.local/bin
+muse update, -u, --update # Check and install latest release
+muse install              # Re-install 'muse' binary to user bin directory
 muse help, --help, -h     # Show CLI help guide
 muse version              # Print version
 ```
