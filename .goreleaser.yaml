@@ -53,7 +53,8 @@ release:
   github:
     owner: KARTHIKKJ369
     name: Tmusic
-  mode: replace
+  replace_existing_artifacts: true
+  replace_existing_draft: true
   make_latest: true
 
 changelog:
