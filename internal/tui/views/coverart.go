@@ -2,6 +2,7 @@ package views
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"image"
 	"image/color"
@@ -9,21 +10,57 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"math"
+	"os"
 	"strings"
 
 	"golang.org/x/image/draw"
 )
 
-// RenderCoverArt converts image bytes into high-definition ANSI truecolor half-block art (▀).
-// targetWidth is character columns; targetHeight is character rows (each row = 2 vertical pixels).
+// SupportsInlineImages detects if the current terminal supports native inline image protocols.
+// Supported by iTerm2, Ghostty, WezTerm, VS Code terminal, Tabby, Warp, Kitty, etc.
+func SupportsInlineImages() bool {
+	termProg := os.Getenv("TERM_PROGRAM")
+	if termProg == "iTerm.app" || termProg == "ghostty" || termProg == "WezTerm" ||
+		termProg == "vscode" || termProg == "Tabby" || termProg == "WarpTerminal" {
+		return true
+	}
+	if os.Getenv("LC_TERMINAL") == "iTerm2" {
+		return true
+	}
+	if os.Getenv("KITTY_WINDOW_ID") != "" || os.Getenv("TERM") == "xterm-kitty" {
+		return true
+	}
+	if os.Getenv("GHOSTTY_RESOURCES_DIR") != "" || os.Getenv("WEZTERM_EXECUTABLE") != "" {
+		return true
+	}
+	return false
+}
+
+// RenderCoverArt renders cover art using native GPU inline images if supported,
+// or falls back to enhanced TrueColor ANSI half-blocks (▀) or an animated vinyl disc.
 func RenderCoverArt(data []byte, targetWidth, targetHeight int, tick int64, isPlaying bool) []string {
 	if len(data) > 0 {
+		if SupportsInlineImages() {
+			return renderInlineImage(data, targetWidth, targetHeight)
+		}
 		if lines, err := decodeAndRenderANSI(data, targetWidth, targetHeight); err == nil && len(lines) > 0 {
 			return lines
 		}
 	}
 	// Fallback to geometric animated vinyl disc art
 	return renderVinylArt(targetWidth, targetHeight, tick, isPlaying)
+}
+
+func renderInlineImage(data []byte, targetWidth, targetHeight int) []string {
+	b64 := base64.StdEncoding.EncodeToString(data)
+	imgSeq := fmt.Sprintf("\x1b]1337;File=inline=1;width=%d;height=%d;preserveAspectRatio=1:%s\a", targetWidth, targetHeight, b64)
+
+	lines := make([]string, targetHeight)
+	lines[0] = imgSeq + strings.Repeat(" ", targetWidth)
+	for y := 1; y < targetHeight; y++ {
+		lines[y] = strings.Repeat(" ", targetWidth)
+	}
+	return lines
 }
 
 func decodeAndRenderANSI(data []byte, targetWidth, targetHeight int) ([]string, error) {

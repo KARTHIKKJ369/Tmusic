@@ -44,7 +44,7 @@ func (v *NowPlayingView) View() string {
 
 	var sb strings.Builder
 
-	// Calculate optimal artwork dimensions (aspect ratio ~1.65 width per character height for true square)
+	// Calculate optimal artwork dimensions (aspect ratio 2:1 columns per row for exact 1:1 square)
 	maxArtH := availH - 9
 	if maxArtH > 14 {
 		maxArtH = 14
@@ -54,10 +54,10 @@ func (v *NowPlayingView) View() string {
 	}
 
 	artH := maxArtH
-	artW := int(float64(artH) * 1.65)
+	artW := int(float64(artH) * 2.0)
 	if artW > v.Width-8 {
 		artW = maxInt(v.Width-8, 10)
-		artH = maxInt(int(float64(artW)/1.65), 4)
+		artH = maxInt(artW/2, 4)
 	}
 
 	// 1. Centered Cover Art
