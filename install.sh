@@ -2,9 +2,9 @@
 set -e
 
 # MUSE // One-Line Universal Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/karthikjayan/muse/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/KARTHIKKJ369/Tmusic/main/install.sh | bash
 
-REPO="karthikjayan/muse"
+REPO="KARTHIKKJ369/Tmusic"
 VERSION="latest"
 
 echo "==> Installing muse..."

@@ -3,7 +3,7 @@ package playlist
 import (
 	"testing"
 
-	"github.com/karthikjayan/muse/internal/audio"
+	"github.com/KARTHIKKJ369/Tmusic/internal/audio"
 )
 
 func TestQueueBasic(t *testing.T) {

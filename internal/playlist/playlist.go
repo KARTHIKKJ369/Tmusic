@@ -4,7 +4,7 @@ package playlist
 import (
 	"time"
 
-	"github.com/karthikjayan/muse/internal/config"
+	"github.com/KARTHIKKJ369/Tmusic/internal/config"
 )
 
 const (

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/karthikjayan/muse/internal/audio"
-	"github.com/karthikjayan/muse/internal/config"
+	"github.com/KARTHIKKJ369/Tmusic/internal/audio"
+	"github.com/KARTHIKKJ369/Tmusic/internal/config"
 )
 
 const indexFile = "index.json"
