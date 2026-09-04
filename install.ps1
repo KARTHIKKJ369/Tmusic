@@ -24,10 +24,11 @@ $TempZip = Join-Path $env:TEMP "muse_install.zip"
 $TempExtract = Join-Path $env:TEMP "muse_extract"
 
 $Urls = @(
-    "https://github.com/$Repo/releases/latest/download/muse_Windows_$TargetArch.zip",
-    "https://github.com/$Repo/releases/latest/download/Tmusic_Windows_$TargetArch.zip",
+    "https://github.com/$Repo/releases/latest/download/muse_windows_$AltArch.zip",
     "https://github.com/$Repo/releases/latest/download/muse_Windows_$AltArch.zip",
-    "https://github.com/$Repo/releases/latest/download/Tmusic_Windows_$AltArch.zip"
+    "https://github.com/$Repo/releases/latest/download/muse_windows_$TargetArch.zip",
+    "https://github.com/$Repo/releases/latest/download/muse_Windows_$TargetArch.zip",
+    "https://github.com/$Repo/releases/latest/download/Tmusic_windows_$AltArch.zip"
 )
 
 $Downloaded = $false
