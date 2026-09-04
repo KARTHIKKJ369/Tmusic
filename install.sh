@@ -59,12 +59,16 @@ trap cleanup EXIT
 
 INSTALLED=0
 
+OS_LOWER="$(echo "$OS" | tr '[:upper:]' '[:lower:]')"
+ARCH_LOWER="$(echo "$ARCH_ALT" | tr '[:upper:]' '[:lower:]')"
+
 # Candidate URLs for release tarball
 URLS=(
-    "https://github.com/$REPO/releases/latest/download/muse_${OS}_${ARCH}.tar.gz"
-    "https://github.com/$REPO/releases/latest/download/Tmusic_${OS}_${ARCH}.tar.gz"
+    "https://github.com/$REPO/releases/latest/download/muse_${OS_LOWER}_${ARCH_LOWER}.tar.gz"
     "https://github.com/$REPO/releases/latest/download/muse_${OS}_${ARCH_ALT}.tar.gz"
-    "https://github.com/$REPO/releases/latest/download/Tmusic_${OS}_${ARCH_ALT}.tar.gz"
+    "https://github.com/$REPO/releases/latest/download/muse_${OS_LOWER}_${ARCH}.tar.gz"
+    "https://github.com/$REPO/releases/latest/download/muse_${OS}_${ARCH}.tar.gz"
+    "https://github.com/$REPO/releases/latest/download/Tmusic_${OS_LOWER}_${ARCH_LOWER}.tar.gz"
 )
 
 echo "==> Checking for pre-built release binary (${OS} ${ARCH})..."
