@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
@@ -13,15 +14,15 @@ import (
 	"golang.org/x/image/draw"
 )
 
-// RenderCoverArt converts image bytes into ANSI truecolor half-block art (▀).
-// targetWidth is character columns, targetHeight is character rows (each row = 2 pixel rows).
+// RenderCoverArt converts image bytes into high-definition ANSI truecolor half-block art (▀).
+// targetWidth is character columns; targetHeight is character rows (each row = 2 vertical pixels).
 func RenderCoverArt(data []byte, targetWidth, targetHeight int, tick int64, isPlaying bool) []string {
 	if len(data) > 0 {
 		if lines, err := decodeAndRenderANSI(data, targetWidth, targetHeight); err == nil && len(lines) > 0 {
 			return lines
 		}
 	}
-	// Fallback to geometric vinyl disc / synthwave art
+	// Fallback to geometric animated vinyl disc art
 	return renderVinylArt(targetWidth, targetHeight, tick, isPlaying)
 }
 
@@ -32,10 +33,39 @@ func decodeAndRenderANSI(data []byte, targetWidth, targetHeight int) ([]string, 
 	}
 
 	pixelHeight := targetHeight * 2
-	dst := image.NewRGBA(image.Rect(0, 0, targetWidth, pixelHeight))
+	pixelWidth := targetWidth
 
-	// Scale image cleanly with BiLinear interpolation
-	draw.BiLinear.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
+	// Preserve aspect ratio: calculate source crop rectangle
+	srcBounds := src.Bounds()
+	srcW := srcBounds.Dx()
+	srcH := srcBounds.Dy()
+
+	var cropRect image.Rectangle
+	// Target aspect ratio in pixels is pixelWidth : pixelHeight
+	targetRatio := float64(pixelWidth) / float64(pixelHeight)
+	srcRatio := float64(srcW) / float64(srcH)
+
+	if srcRatio > targetRatio {
+		// Source is wider than target: crop sides
+		newW := int(float64(srcH) * targetRatio)
+		x0 := srcBounds.Min.X + (srcW-newW)/2
+		cropRect = image.Rect(x0, srcBounds.Min.Y, x0+newW, srcBounds.Max.Y)
+	} else {
+		// Source is taller than target: crop top & bottom
+		newH := int(float64(srcW) / targetRatio)
+		y0 := srcBounds.Min.Y + (srcH-newH)/2
+		cropRect = image.Rect(srcBounds.Min.X, y0, srcBounds.Max.X, y0+newH)
+	}
+
+	// Create high-resolution destination canvas
+	dst := image.NewRGBA(image.Rect(0, 0, pixelWidth, pixelHeight))
+
+	// Pre-fill canvas with sleek dark background (#12121e)
+	bgCol := color.RGBA{R: 18, G: 18, B: 30, A: 255}
+	draw.Draw(dst, dst.Bounds(), &image.Uniform{C: bgCol}, image.Point{}, draw.Src)
+
+	// High quality bicubic scaling with Catmull-Rom resampling
+	draw.CatmullRom.Scale(dst, dst.Bounds(), src, cropRect, draw.Over, nil)
 
 	lines := make([]string, targetHeight)
 	for y := 0; y < targetHeight; y++ {
@@ -44,14 +74,15 @@ func decodeAndRenderANSI(data []byte, targetWidth, targetHeight int) ([]string, 
 		botY := y*2 + 1
 
 		for x := 0; x < targetWidth; x++ {
-			topR, topG, topB, _ := dst.At(x, topY).RGBA()
-			botR, botG, botB, _ := dst.At(x, botY).RGBA()
+			topCol := dst.RGBAAt(x, topY)
+			botCol := dst.RGBAAt(x, botY)
 
-			// Convert 16-bit RGBA (0..65535) to 8-bit (0..255)
-			tr, tg, tb := uint8(topR>>8), uint8(topG>>8), uint8(topB>>8)
-			br, bg, bb := uint8(botR>>8), uint8(botG>>8), uint8(botB>>8)
+			// Alpha blend over background if transparent
+			tr, tg, tb := blendAlpha(topCol, 18, 18, 30)
+			br, bg, bb := blendAlpha(botCol, 18, 18, 30)
 
-			// ▀ has foreground = top pixel, background = bottom pixel
+			// ANSI 24-bit TrueColor half block
+			// Foreground color = top pixel, Background color = bottom pixel
 			fmt.Fprintf(&sb, "\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm▀", tr, tg, tb, br, bg, bb)
 		}
 		sb.WriteString("\x1b[0m")
@@ -61,6 +92,20 @@ func decodeAndRenderANSI(data []byte, targetWidth, targetHeight int) ([]string, 
 	return lines, nil
 }
 
+func blendAlpha(c color.RGBA, bgR, bgG, bgB uint8) (uint8, uint8, uint8) {
+	if c.A == 255 {
+		return c.R, c.G, c.B
+	}
+	if c.A == 0 {
+		return bgR, bgG, bgB
+	}
+	alpha := float64(c.A) / 255.0
+	r := uint8(float64(c.R)*alpha + float64(bgR)*(1-alpha))
+	g := uint8(float64(c.G)*alpha + float64(bgG)*(1-alpha))
+	b := uint8(float64(c.B)*alpha + float64(bgB)*(1-alpha))
+	return r, g, b
+}
+
 // renderVinylArt renders a vinyl record / disc with rotating grooves.
 func renderVinylArt(targetWidth, targetHeight int, tick int64, isPlaying bool) []string {
 	pixelHeight := targetHeight * 2
@@ -68,7 +113,7 @@ func renderVinylArt(targetWidth, targetHeight int, tick int64, isPlaying bool) [
 
 	centerX := float64(targetWidth) / 2.0
 	centerY := float64(pixelHeight) / 2.0
-	maxRadius := math.Min(centerX, centerY) - 1.0
+	maxRadius := math.Min(centerX, centerY) - 0.5
 
 	var angleOffset float64
 	if isPlaying {
@@ -95,17 +140,16 @@ func renderVinylArt(targetWidth, targetHeight int, tick int64, isPlaying bool) [
 }
 
 func vinylPixel(x, y, cx, cy, maxR, angleOffset float64) (uint8, uint8, uint8) {
-	// Correct for character aspect ratio (terminal characters are roughly twice as tall as wide)
 	dx := (x - cx) * 1.8
 	dy := (y - cy)
 	dist := math.Sqrt(dx*dx + dy*dy)
 
 	if dist > maxR*1.8 {
-		// Outer background (dark sleek obsidian)
-		return 18, 18, 28
+		// Outer background
+		return 16, 16, 26
 	}
 
-	// Center spindle (gold / amber hub)
+	// Center spindle
 	if dist < maxR*0.25 {
 		if dist < maxR*0.08 {
 			return 240, 240, 255 // silver center hole
@@ -113,14 +157,14 @@ func vinylPixel(x, y, cx, cy, maxR, angleOffset float64) (uint8, uint8, uint8) {
 		return 255, 180, 50 // golden label
 	}
 
-	// Inner label ring (crimson / magenta)
+	// Inner label ring
 	if dist < maxR*0.55 {
 		return 220, 30, 80
 	}
 
 	// Vinyl grooves with light reflection sheen
 	angle := math.Atan2(dy, dx) + angleOffset
-	sheen := (math.Sin(angle*2.0) + 1.0) / 2.0 // 2-quadrant glossy sheen
+	sheen := (math.Sin(angle*2.0) + 1.0) / 2.0
 
 	// Groove ripples
 	ripple := (math.Sin(dist*3.5) + 1.0) / 2.0

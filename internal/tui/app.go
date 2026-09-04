@@ -767,7 +767,7 @@ func (m *Model) syncNPView() {
 }
 
 func (m *Model) updateViewSizes() {
-	mainH := maxInt(m.height-5, 5)
+	mainH := maxInt(m.height-3, 1)
 	m.libView.Width = m.width
 	m.libView.Height = mainH
 	m.plView.Width = m.width
@@ -784,42 +784,52 @@ func (m *Model) View() string {
 		return "Loading..."
 	}
 
-	// Search overlay
-	if m.showSearch {
-		return m.renderSearch()
+	var rendered string
+	switch {
+	case m.showSearch:
+		rendered = m.renderSearch()
+	case m.showHelp:
+		rendered = m.renderHelp()
+	case m.showTimeJumpModal:
+		rendered = m.renderTimeJumpModal()
+	case m.showPlaylistPicker:
+		rendered = m.renderPlaylistPicker()
+	default:
+		tabs := m.renderTabs()
+		content := m.renderContent()
+		statusBar := m.renderStatusBar()
+		helpBar := m.renderHelpBar()
+
+		rendered = lipgloss.JoinVertical(lipgloss.Left,
+			tabs,
+			content,
+			statusBar,
+			helpBar,
+		)
 	}
 
-	// Help overlay
-	if m.showHelp {
-		return m.renderHelp()
+	// Strictly guarantee that the total output never exceeds the terminal height
+	lines := strings.Split(rendered, "\n")
+	if len(lines) > m.height {
+		lines = lines[:m.height]
 	}
-
-	// Time jump modal (g or :)
-	if m.showTimeJumpModal {
-		return m.renderTimeJumpModal()
+	for len(lines) < m.height {
+		lines = append(lines, "")
 	}
-
-	// Playlist picker modal
-	if m.showPlaylistPicker {
-		return m.renderPlaylistPicker()
-	}
-
-	tabs := m.renderTabs()
-	content := m.renderContent()
-	statusBar := m.renderStatusBar()
-	helpBar := m.renderHelpBar()
-
-	return lipgloss.JoinVertical(lipgloss.Left,
-		tabs,
-		content,
-		statusBar,
-		helpBar,
-	)
+	return strings.Join(lines, "\n")
 }
 
 func (m *Model) renderTabs() string {
 	var tabs []string
-	labels := []string{"[1] Library", "[2] Playlists", "[3] Favourites", "[4] Now Playing"}
+	var labels []string
+	if m.width >= 70 {
+		labels = []string{"[1] Library", "[2] Playlists", "[3] Favourites", "[4] Now Playing"}
+	} else if m.width >= 50 {
+		labels = []string{"[1]Lib", "[2]Lists", "[3]Favs", "[4]Now"}
+	} else {
+		labels = []string{"1", "2", "3", "4"}
+	}
+
 	for i, name := range labels {
 		if i == m.activeTab {
 			tabs = append(tabs, styles.TabActive.Render(name))
@@ -827,13 +837,20 @@ func (m *Model) renderTabs() string {
 			tabs = append(tabs, styles.TabInactive.Render(name))
 		}
 	}
-	title := styles.TabLogo.Render("MUSE // AUDIO")
-	bar := title + " " + strings.Join(tabs, " ")
-	return styles.TabBar.Width(m.width).Render(bar)
+
+	title := ""
+	if m.width >= 70 {
+		title = styles.TabLogo.Render("MUSE // AUDIO") + " "
+	} else if m.width >= 45 {
+		title = styles.TabLogo.Render("MUSE") + " "
+	}
+
+	bar := title + strings.Join(tabs, " ")
+	return styles.TabBar.Width(m.width).MaxHeight(1).Render(bar)
 }
 
 func (m *Model) renderContent() string {
-	h := maxInt(m.height-5, 1)
+	h := maxInt(m.height-3, 1)
 
 	var content string
 	switch m.activeTab {
@@ -858,60 +875,74 @@ func (m *Model) renderContent() string {
 }
 
 func (m *Model) renderStatusBar() string {
-	var left string
 	isPlaying := m.currentTrack != nil && !m.paused
 	miniVU := views.MiniVU(m.tickCount, isPlaying)
 
+	var left string
 	if m.currentTrack != nil {
-		playStatus := styles.Playing.Render("PLAYING")
+		playStatus := styles.Playing.Render("PLAY")
 		if m.paused {
-			playStatus = styles.Amber.Render("PAUSED ")
+			playStatus = styles.Amber.Render("PAUSE")
 		}
-
-		total := m.currentTrack.Duration
-		var ratio float64
-		if total > 0 {
-			ratio = float64(m.position) / float64(total)
-		}
-		barW := minInt(maxInt(m.width*35/100, 16), 36)
-		prog := views.ProgressBar(ratio, barW, m.position, total)
 
 		fav := ""
 		if m.pm.IsFavourite(m.currentTrack.ID) {
 			fav = styles.FavHeart.Render("♥ ")
 		}
 
-		left = fmt.Sprintf(" %s [%s] %s%s · %s  %s",
-			miniVU,
-			playStatus,
-			fav,
-			styles.TrackName.Render(m.currentTrack.DisplayTitle()),
-			styles.ArtistName.Render(m.currentTrack.Artist),
-			prog,
-		)
+		titleMax := maxInt(m.width*30/100, 10)
+		artistMax := maxInt(m.width*20/100, 8)
+		title := styles.TrackName.Render(views.Trunc(m.currentTrack.DisplayTitle(), titleMax))
+		artist := styles.ArtistName.Render(views.Trunc(m.currentTrack.Artist, artistMax))
+
+		total := m.currentTrack.Duration
+		var ratio float64
+		if total > 0 {
+			ratio = float64(m.position) / float64(total)
+		}
+		barW := minInt(maxInt(m.width*20/100, 10), 24)
+		prog := views.ProgressBar(ratio, barW, m.position, total)
+
+		if m.width >= 75 {
+			left = fmt.Sprintf(" %s [%s] %s%s · %s  %s", miniVU, playStatus, fav, title, artist, prog)
+		} else if m.width >= 50 {
+			left = fmt.Sprintf(" %s [%s] %s%s  %s", miniVU, playStatus, fav, title, prog)
+		} else {
+			left = fmt.Sprintf(" %s %s%s", miniVU, fav, title)
+		}
 	} else {
 		left = fmt.Sprintf(" %s %s", miniVU, styles.Muted.Render("STOPPED"))
 	}
 
-	if m.status != "" {
-		left += "  " + styles.Accent.Render("│ "+m.status)
+	if m.status != "" && m.width >= 60 {
+		statusMax := m.width - views.VisibleLen(left) - 6
+		if statusMax > 6 {
+			left += "  " + styles.Accent.Render("│ "+views.Trunc(m.status, statusMax))
+		}
 	}
 
-	return styles.StatusBar.Width(m.width).Render(left)
+	return styles.StatusBar.Width(m.width).MaxHeight(1).Render(left)
 }
 
 func (m *Model) renderHelpBar() string {
-	hints := "[1-4/Tab]view  [s]huffle/play  [0-9/g]jump time  [Space]play  [n/p]next/prev  [←→]seek  [+/-]vol  [m]ute  [a]dd pl  [/]search  [?]help  [q]uit"
-	return styles.HelpBar.Width(m.width).Render(hints)
+	var hints string
+	if m.width >= 90 {
+		hints = "[1-4/Tab]view  [s]huffle/play  [0-9/g]jump  [Space]play  [n/p]track  [←→]seek  [+/-]vol  [m]ute  [a]dd pl  [/]search  [?]help  [q]uit"
+	} else if m.width >= 65 {
+		hints = "[1-4]views  [s]huffle  [Space]play  [n/p]track  [←→]seek  [?]help  [q]uit"
+	} else {
+		hints = "[s]Shuffle  [Space]Play  [n/p]Track  [?]Help  [q]Quit"
+	}
+	return styles.HelpBar.Width(m.width).MaxHeight(1).Render(hints)
 }
 
 func (m *Model) renderSearch() string {
 	var sb strings.Builder
-	sb.WriteString(styles.TabBar.Width(m.width).Render(styles.Primary.Render(" SEARCH // LIBRARY")))
+	sb.WriteString(styles.TabBar.Width(m.width).MaxHeight(1).Render(styles.Primary.Render(" SEARCH // LIBRARY")))
 	sb.WriteString("\n")
 	sb.WriteString(m.srchView.View(m.width))
 	sb.WriteString("\n")
-	sb.WriteString(styles.HelpBar.Width(m.width).Render("[↑↓]navigate  [Enter]play  [Esc]close"))
+	sb.WriteString(styles.HelpBar.Width(m.width).MaxHeight(1).Render("[↑↓]navigate  [Enter]play  [Esc]close"))
 	return sb.String()
 }
 
@@ -954,62 +985,86 @@ func (m *Model) renderHelp() string {
 	var sb strings.Builder
 	sb.WriteString(styles.Bold.Render("MUSE // KEYBOARD SHORTCUTS") + "\n\n")
 
-	type shortcut struct {
-		key  string
-		desc string
-	}
+	if m.height >= 30 {
+		type shortcut struct {
+			key  string
+			desc string
+		}
 
-	type section struct {
-		title string
-		items []shortcut
-	}
+		type section struct {
+			title string
+			items []shortcut
+		}
 
-	sections := []section{
-		{
-			title: "NAVIGATION",
-			items: []shortcut{
-				{"1, 2, 3, 4", "Switch to Library, Playlists, Favs, Now Playing"},
-				{"Tab / Shift+Tab", "Cycle focus between sections & panes"},
-				{"↑ / ↓ (j / k)", "Navigate song & playlist lists"},
-				{"← / → (h / l)", "Switch playlist panes (left/right)"},
+		sections := []section{
+			{
+				title: "NAVIGATION",
+				items: []shortcut{
+					{"1, 2, 3, 4", "Switch to Library, Playlists, Favs, Now Playing"},
+					{"Tab / Shift+Tab", "Cycle focus between sections & panes"},
+					{"↑ / ↓ (j / k)", "Navigate song & playlist lists"},
+					{"← / → (h / l)", "Switch playlist panes (left/right)"},
+				},
 			},
-		},
-		{
-			title: "PLAYBACK & CONTROLS",
-			items: []shortcut{
-				{"s", "Shuffle & play random (moves to Now Playing)"},
-				{"S / z", "Force pick new random track from library"},
-				{"Space", "Play / Pause"},
-				{"Enter", "Play selected track or playlist"},
-				{"n / p", "Next / Previous track in queue"},
-				{"→ / ←", "Seek ±5s (Shift+→ / Shift+← for ±30s)"},
-				{"0 - 9", "Jump to 0% - 90% position in track"},
-				{"g or :", "Jump to exact time (e.g. 1:30, 90s, 50%)"},
-				{"+ / -", "Volume up / down (5% steps)"},
-				{"m", "Mute / Unmute"},
-				{"r", "Cycle Repeat (Off → Track → Queue)"},
+			{
+				title: "PLAYBACK & CONTROLS",
+				items: []shortcut{
+					{"s", "Shuffle & play random (moves to Now Playing)"},
+					{"S / z", "Force pick new random track from library"},
+					{"Space", "Play / Pause"},
+					{"Enter", "Play selected track or playlist"},
+					{"n / p", "Next / Previous track in queue"},
+					{"→ / ←", "Seek ±5s (Shift+→ / Shift+← for ±30s)"},
+					{"0 - 9", "Jump to 0% - 90% position in track"},
+					{"g or :", "Jump to exact time (e.g. 1:30, 90s, 50%)"},
+					{"+ / -", "Volume up / down (5% steps)"},
+					{"m", "Mute / Unmute"},
+					{"r", "Cycle Repeat (Off → Track → Queue)"},
+				},
 			},
-		},
-		{
-			title: "PLAYLISTS & SEARCH",
-			items: []shortcut{
-				{"f", "Toggle favourite heart (♥)"},
-				{"a", "Add selected track to playlist"},
-				{"c", "Create new playlist"},
-				{"d / x", "Delete playlist or remove track"},
-				{"/", "Live fuzzy search filter"},
-				{"?", "Close this help cheatsheet"},
-				{"q / Ctrl+C", "Quit and save player state"},
+			{
+				title: "PLAYLISTS & SEARCH",
+				items: []shortcut{
+					{"f", "Toggle favourite heart (♥)"},
+					{"a", "Add selected track to playlist"},
+					{"c", "Create new playlist"},
+					{"d / x", "Delete playlist or remove track"},
+					{"/", "Live fuzzy search filter"},
+					{"?", "Close this help cheatsheet"},
+					{"q / Ctrl+C", "Quit and save player state"},
+				},
 			},
-		},
-	}
+		}
 
-	for _, sec := range sections {
-		sb.WriteString(styles.Primary.Render("  "+sec.title) + "\n")
-		for _, item := range sec.items {
-			keyPill := styles.KeyHint.Render(fmt.Sprintf("%-18s", item.key))
-			desc := styles.Subtext.Render(item.desc)
-			sb.WriteString(fmt.Sprintf("    %s %s\n", keyPill, desc))
+		for _, sec := range sections {
+			sb.WriteString(styles.Primary.Render("  "+sec.title) + "\n")
+			for _, item := range sec.items {
+				keyPill := styles.KeyHint.Render(fmt.Sprintf("%-18s", item.key))
+				desc := styles.Subtext.Render(item.desc)
+				sb.WriteString(fmt.Sprintf("    %s %s\n", keyPill, desc))
+			}
+			sb.WriteString("\n")
+		}
+	} else {
+		// Compact cheatsheet for small terminal heights (like 82x25 or 58x27)
+		shortcuts := [][2]string{
+			{"1 - 4", "Switch views (Library, Playlists, Favs, Now)"},
+			{"Tab", "Cycle sections / playlist panes"},
+			{"s / S", "Shuffle & play random (moves to Now Playing)"},
+			{"Space / Enter", "Play / Pause / Play selection"},
+			{"n / p", "Next / Previous track in queue"},
+			{"→ / ←", "Seek ±5s (Shift+→ / ← for ±30s)"},
+			{"0 - 9 / g", "Jump to 0%-90% or exact time (1:30, 50%)"},
+			{"+ / - / m", "Volume up / down / Mute toggle"},
+			{"f / a / c", "Favourite (♥) / Add to Playlist / Create"},
+			{"/ / ?", "Live search / Close this help guide"},
+			{"q", "Quit and save player state"},
+		}
+
+		for _, item := range shortcuts {
+			keyPill := styles.KeyHint.Render(fmt.Sprintf("%-14s", item[0]))
+			desc := styles.Subtext.Render(item[1])
+			sb.WriteString(fmt.Sprintf("  %s %s\n", keyPill, desc))
 		}
 		sb.WriteString("\n")
 	}
