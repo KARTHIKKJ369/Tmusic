@@ -35,6 +35,7 @@ var (
 	Amber   = lipgloss.NewStyle().Foreground(ColorAmber)
 	FavHeart= lipgloss.NewStyle().Foreground(ColorFav).Bold(true)
 	Playing = lipgloss.NewStyle().Foreground(ColorPlaying).Bold(true)
+	Danger  = lipgloss.NewStyle().Foreground(ColorFav).Bold(true)
 )
 
 // Tab styles with pill buttons

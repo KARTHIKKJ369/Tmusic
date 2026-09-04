@@ -3,7 +3,9 @@ package tui
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"github.com/KARTHIKKJ369/Tmusic/internal/audio"
 	"github.com/KARTHIKKJ369/Tmusic/internal/config"
 	"github.com/KARTHIKKJ369/Tmusic/internal/library"
+	"github.com/KARTHIKKJ369/Tmusic/internal/online"
 	"github.com/KARTHIKKJ369/Tmusic/internal/playlist"
 	"github.com/KARTHIKKJ369/Tmusic/internal/tui/styles"
 	"github.com/KARTHIKKJ369/Tmusic/internal/tui/views"
@@ -26,10 +29,11 @@ const (
 	TabLibrary    = 0
 	TabPlaylists  = 1
 	TabFavs       = 2
-	TabNowPlaying = 3
+	TabOnline     = 3
+	TabNowPlaying = 4
 )
 
-var tabNames = []string{"1 Library", "2 Playlists", "3 Favourites", "4 Now Playing"}
+var tabNames = []string{"1 Library", "2 Playlists", "3 Favourites", "4 Online", "5 Now Playing"}
 
 // tickMsg is fired by the player's tick event.
 type tickMsg struct{}
@@ -65,11 +69,14 @@ type Model struct {
 	timeJumpInput     string
 
 	// Views
-	libView  *views.LibraryView
-	plView   *views.PlaylistsView
-	favView  *views.FavouritesView
-	npView   *views.NowPlayingView
-	srchView *views.SearchView
+	libView    *views.LibraryView
+	plView     *views.PlaylistsView
+	favView    *views.FavouritesView
+	onlineView *views.OnlineView
+	npView     *views.NowPlayingView
+	srchView   *views.SearchView
+
+	initialOnlineQuery string
 
 	// Playback state (mirrors player for rendering without locking)
 	currentTrack *audio.Track
@@ -95,11 +102,9 @@ func New(cfg config.Config, idx *library.Index, pm *playlist.Manager, player *au
 			Tracks: tracks,
 			FavIDs: pm.Favourites,
 		},
-		plView: views.NewPlaylistsView(),
-		favView: &views.FavouritesView{
-			Tracks: tracks,
-			FavIDs: pm.Favourites,
-		},
+		plView:     views.NewPlaylistsView(),
+		favView:    &views.FavouritesView{Tracks: tracks, FavIDs: pm.Favourites},
+		onlineView: views.NewOnlineView(),
 		npView: &views.NowPlayingView{
 			Repeat:  cfg.Repeat,
 			Shuffle: cfg.Shuffle,
@@ -119,9 +124,25 @@ func New(cfg config.Config, idx *library.Index, pm *playlist.Manager, player *au
 	return m
 }
 
-// Init starts the event listener goroutine.
+// SetOnlineMode switches the player directly into the Online search view.
+func (m *Model) SetOnlineMode(query string) {
+	m.activeTab = TabOnline
+	m.initialOnlineQuery = query
+	if query != "" {
+		m.onlineView.Query = query
+		m.onlineView.InputMode = false
+	} else {
+		m.onlineView.InputMode = true
+	}
+}
+
+// Init starts the event listener goroutine and executes initial online query if provided.
 func (m *Model) Init() tea.Cmd {
-	return listenForPlayerEvents(m.player)
+	cmds := []tea.Cmd{listenForPlayerEvents(m.player)}
+	if m.initialOnlineQuery != "" {
+		cmds = append(cmds, m.searchOnline(m.initialOnlineQuery))
+	}
+	return tea.Batch(cmds...)
 }
 
 // listenForPlayerEvents waits for a player event and converts it to a tea.Msg.
@@ -138,9 +159,62 @@ func listenForPlayerEvents(p *audio.Player) tea.Cmd {
 	}
 }
 
+type onlineSearchMsg struct {
+	query  string
+	tracks []online.ITunesTrack
+	err    error
+}
+
+type onlineStreamMsg struct {
+	track    online.ITunesTrack
+	filePath string
+	artwork  []byte
+	err      error
+}
+
 // Update handles all messages.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+
+	case onlineSearchMsg:
+		m.onlineView.Loading = false
+		if msg.err != nil {
+			m.onlineView.ErrorMsg = msg.err.Error()
+			m.status = "Search error: " + msg.err.Error()
+		} else {
+			m.onlineView.Tracks = msg.tracks
+			m.onlineView.Cursor = 0
+			m.onlineView.ScrollOffset = 0
+			m.onlineView.ErrorMsg = ""
+			m.status = fmt.Sprintf("Found %d online tracks for '%s'", len(msg.tracks), msg.query)
+		}
+		return m, nil
+
+	case onlineStreamMsg:
+		m.onlineView.Loading = false
+		if msg.err != nil {
+			m.onlineView.ErrorMsg = msg.err.Error()
+			m.status = "Streaming failed: " + msg.err.Error()
+			return m, nil
+		}
+		newTrack := audio.Track{
+			ID:       fmt.Sprintf("online_%d", msg.track.TrackID),
+			Path:     msg.filePath,
+			Title:    msg.track.TrackName,
+			Artist:   msg.track.ArtistName,
+			Album:    msg.track.CollectionName,
+			Duration: msg.track.Duration(),
+			Year:     msg.track.Year(),
+			Genre:    msg.track.PrimaryGenre,
+		}
+		m.onlineView.PlayingTrackID = msg.track.TrackID
+		m.currentCover = msg.artwork
+		m.npView.CoverData = msg.artwork
+		m.queue.Append(newTrack)
+		m.queue.JumpTo(newTrack.ID)
+		m.activeTab = TabNowPlaying
+		m.status = fmt.Sprintf("PLAYING: %s - %s (Online)", newTrack.Artist, newTrack.Title)
+		return m, m.playTrack(newTrack)
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -161,10 +235,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		if msg.Type == tea.MouseLeft && msg.Y == 0 {
 			// Click on tab header area
-			colWidth := m.width / 4
+			colWidth := m.width / 5
 			if colWidth > 0 {
 				tab := msg.X / colWidth
-				if tab >= 0 && tab <= 3 {
+				if tab >= 0 && tab <= 4 {
 					m.activeTab = tab
 				}
 			}
@@ -224,6 +298,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handlePlaylistInput(msg)
 	}
 
+	// Online search input mode
+	if m.activeTab == TabOnline && m.onlineView.InputMode {
+		return m.handleOnlineInput(msg)
+	}
+
 	key := msg.String()
 
 	// Direct percentage jumps in Now Playing tab (0..9)
@@ -253,6 +332,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "3":
 		m.activeTab = TabFavs
 	case "4":
+		m.activeTab = TabOnline
+	case "5":
 		m.activeTab = TabNowPlaying
 
 	// Tab cycling
@@ -260,13 +341,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.activeTab == TabPlaylists {
 			m.plView.TogglePane()
 		} else {
-			m.activeTab = (m.activeTab + 1) % 4
+			m.activeTab = (m.activeTab + 1) % 5
 		}
 	case "shift+tab", "[":
 		if m.activeTab == TabPlaylists {
 			m.plView.TogglePane()
 		} else {
-			m.activeTab = (m.activeTab + 3) % 4
+			m.activeTab = (m.activeTab + 4) % 5
 		}
 
 	// Help toggle
@@ -284,6 +365,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Search
 	case "/":
+		if m.activeTab == TabOnline {
+			m.onlineView.InputMode = true
+			return m, nil
+		}
 		m.showSearch = true
 		m.srchView.Active = true
 		m.srchView.Query = ""
@@ -366,6 +451,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Shuffle & Random Play
 	case "s":
+		if m.activeTab == TabOnline {
+			if len(m.onlineView.Tracks) > 0 {
+				idx := rand.Intn(len(m.onlineView.Tracks))
+				m.onlineView.Cursor = idx
+				return m, m.streamOnlineTrack(m.onlineView.Tracks[idx])
+			}
+			return m, nil
+		}
 		if m.currentTrack == nil {
 			// Nothing playing yet: shuffle library and start playing a fresh random track immediately
 			m.queue = playlist.NewQueue(m.index.All())
@@ -517,6 +610,19 @@ func (m *Model) openPlaylistPicker() {
 		}
 	case TabPlaylists:
 		tr, ok = m.plView.SelectedTrack()
+	case TabOnline:
+		if ot := m.onlineView.Selected(); ot != nil {
+			tr = audio.Track{
+				ID:       fmt.Sprintf("online_%d", ot.TrackID),
+				Title:    ot.TrackName,
+				Artist:   ot.ArtistName,
+				Album:    ot.CollectionName,
+				Duration: ot.Duration(),
+				Year:     ot.Year(),
+				Genre:    ot.PrimaryGenre,
+			}
+			ok = true
+		}
 	}
 
 	if !ok {
@@ -650,6 +756,8 @@ func (m *Model) moveUp() {
 		m.plView.MoveUp()
 	case TabFavs:
 		m.favView.MoveUp()
+	case TabOnline:
+		m.onlineView.MoveUp()
 	}
 }
 
@@ -661,6 +769,8 @@ func (m *Model) moveDown() {
 		m.plView.MoveDown()
 	case TabFavs:
 		m.favView.MoveDown()
+	case TabOnline:
+		m.onlineView.MoveDown(maxInt(m.height-7, 4))
 	}
 }
 
@@ -710,6 +820,10 @@ func (m *Model) playSelected() tea.Cmd {
 			}
 			return m.playTrack(startTrack)
 		}
+	case TabOnline:
+		if t := m.onlineView.Selected(); t != nil {
+			return m.streamOnlineTrack(*t)
+		}
 	}
 	return nil
 }
@@ -729,6 +843,10 @@ func (m *Model) toggleFavSelected() {
 		if t, ok := m.plView.SelectedTrack(); ok {
 			id = t.ID
 		}
+	case TabOnline:
+		if ot := m.onlineView.Selected(); ot != nil {
+			id = fmt.Sprintf("online_%d", ot.TrackID)
+		}
 	default:
 		if m.currentTrack != nil {
 			id = m.currentTrack.ID
@@ -746,6 +864,51 @@ func (m *Model) toggleFavSelected() {
 	_ = m.pm.Save()
 }
 
+func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.onlineView.InputMode = false
+		return m, nil
+	case "enter":
+		query := strings.TrimSpace(m.onlineView.Query)
+		if query != "" {
+			return m, m.searchOnline(query)
+		}
+	case "backspace":
+		if len(m.onlineView.Query) > 0 {
+			m.onlineView.Query = m.onlineView.Query[:len(m.onlineView.Query)-1]
+		}
+	default:
+		if len(msg.String()) == 1 {
+			m.onlineView.Query += msg.String()
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) searchOnline(query string) tea.Cmd {
+	m.onlineView.Loading = true
+	m.onlineView.LoadingMsg = fmt.Sprintf("Searching iTunes for \"%s\"...", query)
+	m.onlineView.ErrorMsg = ""
+	m.onlineView.InputMode = false
+	return func() tea.Msg {
+		tracks, err := online.SearchITunes(query, 30)
+		return onlineSearchMsg{query: query, tracks: tracks, err: err}
+	}
+}
+
+func (m *Model) streamOnlineTrack(t online.ITunesTrack) tea.Cmd {
+	m.onlineView.Loading = true
+	m.onlineView.LoadingMsg = fmt.Sprintf("Buffering \"%s - %s\" via yt-dlp...", t.ArtistName, t.TrackName)
+	m.status = fmt.Sprintf("ONLINE: Buffering %s - %s...", t.ArtistName, t.TrackName)
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		filePath, art, err := online.ResolveAndCache(ctx, t, nil)
+		return onlineStreamMsg{track: t, filePath: filePath, artwork: art, err: err}
+	}
+}
+
 func (m *Model) playTrack(t audio.Track) tea.Cmd {
 	return func() tea.Msg {
 		if err := m.player.Load(t.Path); err != nil {
@@ -754,7 +917,9 @@ func (m *Model) playTrack(t audio.Track) tea.Cmd {
 		}
 		imgBytes, _ := audio.ExtractPicture(t.Path)
 		m.currentTrack = &t
-		m.currentCover = imgBytes
+		if len(imgBytes) > 0 {
+			m.currentCover = imgBytes
+		}
 		m.paused = false
 		m.position = 0
 		m.libView.PlayingID = t.ID
@@ -884,6 +1049,8 @@ func (m *Model) renderContent() string {
 		content = m.plView.View()
 	case TabFavs:
 		content = m.favView.View()
+	case TabOnline:
+		content = m.onlineView.View(m.width, h)
 	case TabNowPlaying:
 		content = m.npView.View()
 	}
@@ -950,10 +1117,18 @@ func (m *Model) renderStatusBar() string {
 
 func (m *Model) renderHelpBar() string {
 	var hints string
+	if m.activeTab == TabOnline {
+		if m.onlineView.InputMode {
+			hints = "[Enter]Search iTunes  [Esc]Results  [↑↓]Navigate"
+		} else {
+			hints = "[1-5]view  [/]search  [Enter]stream  [↑↓]navigate  [s]huffle  [a]add pl  [f]fav  [?]help  [q]uit"
+		}
+		return styles.HelpBar.Width(m.width).MaxHeight(1).Render(hints)
+	}
 	if m.width >= 90 {
-		hints = "[1-4/Tab]view  [s]huffle/play  [0-9/g]jump  [Space]play  [n/p]track  [←→]seek  [o]pen cover  [+/-]vol  [/]search  [?]help  [q]uit"
+		hints = "[1-5/Tab]view  [s]huffle/play  [0-9/g]jump  [Space]play  [n/p]track  [←→]seek  [o]pen cover  [+/-]vol  [/]search  [?]help  [q]uit"
 	} else if m.width >= 65 {
-		hints = "[1-4]views  [s]huffle  [Space]play  [n/p]track  [←→]seek  [o]pen cover  [?]help  [q]uit"
+		hints = "[1-5]views  [s]huffle  [Space]play  [n/p]track  [←→]seek  [o]pen cover  [?]help  [q]uit"
 	} else {
 		hints = "[s]Shuffle  [Space]Play  [n/p]Track  [o]Cover  [?]Help  [q]Quit"
 	}
@@ -1024,7 +1199,7 @@ func (m *Model) renderHelp() string {
 			{
 				title: "NAVIGATION",
 				items: []shortcut{
-					{"1, 2, 3, 4", "Switch to Library, Playlists, Favs, Now Playing"},
+					{"1, 2, 3, 4, 5", "Switch: Library, Playlists, Favs, Online, Now"},
 					{"Tab / Shift+Tab", "Cycle focus between sections & panes"},
 					{"↑ / ↓ (j / k)", "Navigate song & playlist lists"},
 					{"← / → (h / l)", "Switch playlist panes (left/right)"},
@@ -1048,13 +1223,13 @@ func (m *Model) renderHelp() string {
 				},
 			},
 			{
-				title: "PLAYLISTS & SEARCH",
+				title: "PLAYLISTS, ONLINE & SEARCH",
 				items: []shortcut{
 					{"f", "Toggle favourite heart (♥)"},
 					{"a", "Add selected track to playlist"},
 					{"c", "Create new playlist"},
 					{"d / x", "Delete playlist or remove track"},
-					{"/", "Live fuzzy search filter"},
+					{"/", "Fuzzy search (local library or online)"},
 					{"?", "Close this help cheatsheet"},
 					{"q / Ctrl+C", "Quit and save player state"},
 				},
@@ -1073,7 +1248,7 @@ func (m *Model) renderHelp() string {
 	} else {
 		// Compact cheatsheet for small terminal heights (like 82x25 or 58x27)
 		shortcuts := [][2]string{
-			{"1 - 4", "Switch views (Library, Playlists, Favs, Now)"},
+			{"1 - 5", "Switch views (Library, Playlists, Favs, Online, Now)"},
 			{"Tab", "Cycle sections / playlist panes"},
 			{"s / S", "Shuffle & play random (moves to Now Playing)"},
 			{"Space / Enter", "Play / Pause / Play selection"},
@@ -1083,7 +1258,7 @@ func (m *Model) renderHelp() string {
 			{"o", "Open full album art in photo viewer"},
 			{"+ / - / m", "Volume up / down / Mute toggle"},
 			{"f / a / c", "Favourite (♥) / Add to Playlist / Create"},
-			{"/ / ?", "Live search / Close this help guide"},
+			{"/ / ?", "Search / Close this help guide"},
 			{"q", "Quit and save player state"},
 		}
 

@@ -79,6 +79,13 @@ func (q *Queue) Len() int { return len(q.order) }
 // Pos returns the current 0-based position.
 func (q *Queue) Pos() int { return q.pos }
 
+// Append adds a track to the end of the queue.
+func (q *Queue) Append(t audio.Track) {
+	idx := len(q.original)
+	q.original = append(q.original, t)
+	q.order = append(q.order, idx)
+}
+
 // Shuffle re-orders the queue using a Spotify-style de-clustered shuffle.
 // If activeTrackID is supplied, it preserves the currently playing track position.
 // If activeTrackID is omitted/empty, it starts from position 0 with a 100% uniformly random track.
