@@ -35,37 +35,34 @@ func decodeAndRenderANSI(data []byte, targetWidth, targetHeight int) ([]string, 
 	pixelHeight := targetHeight * 2
 	pixelWidth := targetWidth
 
-	// Preserve aspect ratio: calculate source crop rectangle
+	// Preserve 1:1 aspect ratio: calculate center-crop rectangle
 	srcBounds := src.Bounds()
 	srcW := srcBounds.Dx()
 	srcH := srcBounds.Dy()
 
 	var cropRect image.Rectangle
-	// Target aspect ratio in pixels is pixelWidth : pixelHeight
-	targetRatio := float64(pixelWidth) / float64(pixelHeight)
-	srcRatio := float64(srcW) / float64(srcH)
-
-	if srcRatio > targetRatio {
-		// Source is wider than target: crop sides
-		newW := int(float64(srcH) * targetRatio)
-		x0 := srcBounds.Min.X + (srcW-newW)/2
-		cropRect = image.Rect(x0, srcBounds.Min.Y, x0+newW, srcBounds.Max.Y)
+	if srcW > srcH {
+		// Landscape: crop width
+		x0 := srcBounds.Min.X + (srcW-srcH)/2
+		cropRect = image.Rect(x0, srcBounds.Min.Y, x0+srcH, srcBounds.Max.Y)
 	} else {
-		// Source is taller than target: crop top & bottom
-		newH := int(float64(srcW) / targetRatio)
-		y0 := srcBounds.Min.Y + (srcH-newH)/2
-		cropRect = image.Rect(srcBounds.Min.X, y0, srcBounds.Max.X, y0+newH)
+		// Portrait: crop height
+		y0 := srcBounds.Min.Y + (srcH-srcW)/2
+		cropRect = image.Rect(srcBounds.Min.X, y0, srcBounds.Max.X, y0+srcW)
 	}
 
-	// Create high-resolution destination canvas
+	// Create destination canvas
 	dst := image.NewRGBA(image.Rect(0, 0, pixelWidth, pixelHeight))
 
-	// Pre-fill canvas with sleek dark background (#12121e)
+	// Pre-fill canvas with obsidian background (#12121e)
 	bgCol := color.RGBA{R: 18, G: 18, B: 30, A: 255}
 	draw.Draw(dst, dst.Bounds(), &image.Uniform{C: bgCol}, image.Point{}, draw.Src)
 
 	// High quality bicubic scaling with Catmull-Rom resampling
 	draw.CatmullRom.Scale(dst, dst.Bounds(), src, cropRect, draw.Over, nil)
+
+	// Apply sharpening & contrast enhancement filter to bring out typography & artwork details
+	sharpened := enhanceContrastAndSharpen(dst)
 
 	lines := make([]string, targetHeight)
 	for y := 0; y < targetHeight; y++ {
@@ -74,14 +71,14 @@ func decodeAndRenderANSI(data []byte, targetWidth, targetHeight int) ([]string, 
 		botY := y*2 + 1
 
 		for x := 0; x < targetWidth; x++ {
-			topCol := dst.RGBAAt(x, topY)
-			botCol := dst.RGBAAt(x, botY)
+			topCol := sharpened.RGBAAt(x, topY)
+			botCol := sharpened.RGBAAt(x, botY)
 
 			// Alpha blend over background if transparent
 			tr, tg, tb := blendAlpha(topCol, 18, 18, 30)
 			br, bg, bb := blendAlpha(botCol, 18, 18, 30)
 
-			// ANSI 24-bit TrueColor half block
+			// ANSI 24-bit TrueColor half block:
 			// Foreground color = top pixel, Background color = bottom pixel
 			fmt.Fprintf(&sb, "\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm▀", tr, tg, tb, br, bg, bb)
 		}
@@ -90,6 +87,51 @@ func decodeAndRenderANSI(data []byte, targetWidth, targetHeight int) ([]string, 
 	}
 
 	return lines, nil
+}
+
+// enhanceContrastAndSharpen enhances edge contrast for downsampled album art
+func enhanceContrastAndSharpen(src *image.RGBA) *image.RGBA {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	out := image.NewRGBA(b)
+
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if x == 0 || y == 0 || x == w-1 || y == h-1 {
+				out.SetRGBA(x, y, src.RGBAAt(x, y))
+				continue
+			}
+
+			c := src.RGBAAt(x, y)
+			up := src.RGBAAt(x, y-1)
+			down := src.RGBAAt(x, y+1)
+			left := src.RGBAAt(x-1, y)
+			right := src.RGBAAt(x+1, y)
+
+			// Unsharp mask 3x3 kernel (Laplacian edge detector)
+			r := clampUint8(int(c.R)*5 - int(up.R) - int(down.R) - int(left.R) - int(right.R))
+			g := clampUint8(int(c.G)*5 - int(up.G) - int(down.G) - int(left.G) - int(right.G))
+			bl := clampUint8(int(c.B)*5 - int(up.B) - int(down.B) - int(left.B) - int(right.B))
+
+			// Blend 50% sharpened with 50% original for clean natural sharpness
+			finalR := uint8(float64(r)*0.5 + float64(c.R)*0.5)
+			finalG := uint8(float64(g)*0.5 + float64(c.G)*0.5)
+			finalB := uint8(float64(bl)*0.5 + float64(c.B)*0.5)
+
+			out.SetRGBA(x, y, color.RGBA{R: finalR, G: finalG, B: finalB, A: c.A})
+		}
+	}
+	return out
+}
+
+func clampUint8(v int) uint8 {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return uint8(v)
 }
 
 func blendAlpha(c color.RGBA, bgR, bgG, bgB uint8) (uint8, uint8, uint8) {
@@ -140,11 +182,12 @@ func renderVinylArt(targetWidth, targetHeight int, tick int64, isPlaying bool) [
 }
 
 func vinylPixel(x, y, cx, cy, maxR, angleOffset float64) (uint8, uint8, uint8) {
-	dx := (x - cx) * 1.8
+	// 1.65 character cell aspect ratio correction for perfect round vinyl disc
+	dx := (x - cx) * 1.65
 	dy := (y - cy)
 	dist := math.Sqrt(dx*dx + dy*dy)
 
-	if dist > maxR*1.8 {
+	if dist > maxR*1.65 {
 		// Outer background
 		return 16, 16, 26
 	}
