@@ -46,11 +46,11 @@ func (v *NowPlayingView) View() string {
 
 	// Calculate optimal artwork dimensions (aspect ratio 2:1 columns per row for exact 1:1 square)
 	maxArtH := availH - 9
-	if maxArtH > 14 {
-		maxArtH = 14
+	if maxArtH > 18 {
+		maxArtH = 18
 	}
-	if maxArtH < 5 {
-		maxArtH = 5
+	if maxArtH < 4 {
+		maxArtH = 4
 	}
 
 	artH := maxArtH

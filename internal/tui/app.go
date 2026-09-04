@@ -2,18 +2,23 @@
 package tui
 
 import (
+	"bytes"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/KARTHIKKJ369/Tmusic/internal/audio"
 	"github.com/KARTHIKKJ369/Tmusic/internal/config"
 	"github.com/KARTHIKKJ369/Tmusic/internal/library"
 	"github.com/KARTHIKKJ369/Tmusic/internal/playlist"
 	"github.com/KARTHIKKJ369/Tmusic/internal/tui/styles"
 	"github.com/KARTHIKKJ369/Tmusic/internal/tui/views"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // Tab indices
@@ -413,6 +418,22 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Favourite
 	case "f":
 		m.toggleFavSelected()
+
+	// Open original album art in system photo viewer
+	case "o", "O":
+		if len(m.npView.CoverData) > 0 {
+			title := "cover"
+			if m.currentTrack != nil {
+				title = m.currentTrack.Title
+			}
+			if err := openCoverArt(m.npView.CoverData, title); err == nil {
+				m.status = "Cover art opened in system photo viewer"
+			} else {
+				m.status = fmt.Sprintf("Failed to open cover: %v", err)
+			}
+		} else {
+			m.status = "No embedded album art found in track"
+		}
 
 	// Add track to playlist
 	case "a":
@@ -930,11 +951,11 @@ func (m *Model) renderStatusBar() string {
 func (m *Model) renderHelpBar() string {
 	var hints string
 	if m.width >= 90 {
-		hints = "[1-4/Tab]view  [s]huffle/play  [0-9/g]jump  [Space]play  [n/p]track  [←→]seek  [+/-]vol  [m]ute  [a]dd pl  [/]search  [?]help  [q]uit"
+		hints = "[1-4/Tab]view  [s]huffle/play  [0-9/g]jump  [Space]play  [n/p]track  [←→]seek  [o]pen cover  [+/-]vol  [/]search  [?]help  [q]uit"
 	} else if m.width >= 65 {
-		hints = "[1-4]views  [s]huffle  [Space]play  [n/p]track  [←→]seek  [?]help  [q]uit"
+		hints = "[1-4]views  [s]huffle  [Space]play  [n/p]track  [←→]seek  [o]pen cover  [?]help  [q]uit"
 	} else {
-		hints = "[s]Shuffle  [Space]Play  [n/p]Track  [?]Help  [q]Quit"
+		hints = "[s]Shuffle  [Space]Play  [n/p]Track  [o]Cover  [?]Help  [q]Quit"
 	}
 	return styles.HelpBar.Width(m.width).MaxHeight(1).Render(hints)
 }
@@ -1020,6 +1041,7 @@ func (m *Model) renderHelp() string {
 					{"→ / ←", "Seek ±5s (Shift+→ / Shift+← for ±30s)"},
 					{"0 - 9", "Jump to 0% - 90% position in track"},
 					{"g or :", "Jump to exact time (e.g. 1:30, 90s, 50%)"},
+					{"o", "Open full album cover in photo viewer"},
 					{"+ / -", "Volume up / down (5% steps)"},
 					{"m", "Mute / Unmute"},
 					{"r", "Cycle Repeat (Off → Track → Queue)"},
@@ -1058,6 +1080,7 @@ func (m *Model) renderHelp() string {
 			{"n / p", "Next / Previous track in queue"},
 			{"→ / ←", "Seek ±5s (Shift+→ / ← for ±30s)"},
 			{"0 - 9 / g", "Jump to 0%-90% or exact time (1:30, 50%)"},
+			{"o", "Open full album art in photo viewer"},
 			{"+ / - / m", "Volume up / down / Mute toggle"},
 			{"f / a / c", "Favourite (♥) / Add to Playlist / Create"},
 			{"/ / ?", "Live search / Close this help guide"},
@@ -1075,6 +1098,38 @@ func (m *Model) renderHelp() string {
 	sb.WriteString(styles.Muted.Render("  [?] or [Esc] to close guide"))
 	modal := styles.Modal.Render(sb.String())
 	return views.Center(modal, m.width)
+}
+
+func openCoverArt(data []byte, title string) error {
+	tmpDir := os.TempDir()
+	ext := ".jpg"
+	if len(data) >= 8 && bytes.Equal(data[:8], []byte("\x89PNG\r\n\x1a\n")) {
+		ext = ".png"
+	}
+	clean := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, title)
+	if clean == "" {
+		clean = "cover"
+	}
+	tmpFile := filepath.Join(tmpDir, fmt.Sprintf("muse_%s%s", clean, ext))
+	if err := os.WriteFile(tmpFile, data, 0o644); err != nil {
+		return err
+	}
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", tmpFile)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", tmpFile)
+	default:
+		cmd = exec.Command("xdg-open", tmpFile)
+	}
+	return cmd.Start()
 }
 
 func maxInt(a, b int) int {
