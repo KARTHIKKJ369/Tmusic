@@ -130,6 +130,7 @@ func (m *Model) SetOnlineMode(query string) {
 	m.initialOnlineQuery = query
 	if query != "" {
 		m.onlineView.Query = query
+		m.onlineView.LastQuery = query
 		m.onlineView.InputMode = false
 	} else {
 		m.onlineView.InputMode = true
@@ -178,6 +179,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case onlineSearchMsg:
 		m.onlineView.Loading = false
+		m.onlineView.HasSearched = true
+		m.onlineView.LastQuery = msg.query
 		if msg.err != nil {
 			m.onlineView.ErrorMsg = msg.err.Error()
 			m.status = "Search error: " + msg.err.Error()
@@ -186,7 +189,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.onlineView.Cursor = 0
 			m.onlineView.ScrollOffset = 0
 			m.onlineView.ErrorMsg = ""
-			m.status = fmt.Sprintf("Found %d online tracks for '%s'", len(msg.tracks), msg.query)
+			if len(msg.tracks) > 0 {
+				m.status = fmt.Sprintf("Found %d online tracks for '%s'", len(msg.tracks), msg.query)
+			} else {
+				m.status = fmt.Sprintf("No online tracks found for '%s'", msg.query)
+			}
 		}
 		return m, nil
 
@@ -865,22 +872,49 @@ func (m *Model) toggleFavSelected() {
 }
 
 func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
+	switch msg.Type {
+	case tea.KeyEsc:
 		m.onlineView.InputMode = false
 		return m, nil
-	case "enter":
+	case tea.KeyEnter:
 		query := strings.TrimSpace(m.onlineView.Query)
 		if query != "" {
 			return m, m.searchOnline(query)
 		}
-	case "backspace":
+		m.onlineView.InputMode = false
+		return m, nil
+	case tea.KeyBackspace:
 		if len(m.onlineView.Query) > 0 {
 			m.onlineView.Query = m.onlineView.Query[:len(m.onlineView.Query)-1]
 		}
+		return m, nil
+	case tea.KeySpace:
+		m.onlineView.Query += " "
+		return m, nil
+	case tea.KeyRunes:
+		m.onlineView.Query += string(msg.Runes)
+		return m, nil
 	default:
-		if len(msg.String()) == 1 {
-			m.onlineView.Query += msg.String()
+		switch msg.String() {
+		case "enter", "ctrl+m":
+			query := strings.TrimSpace(m.onlineView.Query)
+			if query != "" {
+				return m, m.searchOnline(query)
+			}
+			m.onlineView.InputMode = false
+			return m, nil
+		case "esc":
+			m.onlineView.InputMode = false
+			return m, nil
+		case "backspace":
+			if len(m.onlineView.Query) > 0 {
+				m.onlineView.Query = m.onlineView.Query[:len(m.onlineView.Query)-1]
+			}
+			return m, nil
+		default:
+			if len(msg.String()) == 1 {
+				m.onlineView.Query += msg.String()
+			}
 		}
 	}
 	return m, nil
@@ -891,6 +925,8 @@ func (m *Model) searchOnline(query string) tea.Cmd {
 	m.onlineView.LoadingMsg = fmt.Sprintf("Searching iTunes for \"%s\"...", query)
 	m.onlineView.ErrorMsg = ""
 	m.onlineView.InputMode = false
+	m.onlineView.HasSearched = true
+	m.onlineView.LastQuery = query
 	return func() tea.Msg {
 		tracks, err := online.SearchITunes(query, 30)
 		return onlineSearchMsg{query: query, tracks: tracks, err: err}
@@ -1011,12 +1047,12 @@ func (m *Model) View() string {
 func (m *Model) renderTabs() string {
 	var tabs []string
 	var labels []string
-	if m.width >= 70 {
-		labels = []string{"[1] Library", "[2] Playlists", "[3] Favourites", "[4] Now Playing"}
-	} else if m.width >= 50 {
-		labels = []string{"[1]Lib", "[2]Lists", "[3]Favs", "[4]Now"}
+	if m.width >= 75 {
+		labels = []string{"[1] Library", "[2] Playlists", "[3] Favourites", "[4] Online", "[5] Now Playing"}
+	} else if m.width >= 55 {
+		labels = []string{"[1]Lib", "[2]Lists", "[3]Favs", "[4]Online", "[5]Now"}
 	} else {
-		labels = []string{"1", "2", "3", "4"}
+		labels = []string{"1", "2", "3", "4", "5"}
 	}
 
 	for i, name := range labels {
@@ -1028,7 +1064,7 @@ func (m *Model) renderTabs() string {
 	}
 
 	title := ""
-	if m.width >= 70 {
+	if m.width >= 75 {
 		title = styles.TabLogo.Render("MUSE // AUDIO") + " "
 	} else if m.width >= 45 {
 		title = styles.TabLogo.Render("MUSE") + " "
