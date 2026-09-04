@@ -44,69 +44,80 @@ func (v *NowPlayingView) View() string {
 
 	var sb strings.Builder
 
-	// Determine if side-by-side or stacked
-	isWide := v.Width >= 55 && availH >= 12
-
-	var artH, artW int
-	if isWide {
-		// Calculate optimal square art dimensions
-		// Each character row is 2 vertical pixels, so artW = artH * 2 gives a 1:1 square
-		maxArtH := (availH - 6) // leave room for progress bar, controls, status
-		if maxArtH > 16 {
-			maxArtH = 16
-		}
-		if maxArtH < 8 {
-			maxArtH = 8
-		}
-		artH = maxArtH
-		artW = artH * 2
-		if artW > v.Width-25 {
-			artW = maxInt(v.Width-25, 16)
-			artH = artW / 2
-		}
-	} else {
-		// Compact stacked
-		artH = minInt(maxInt((availH-8)/2, 5), 8)
-		artW = artH * 2
+	// Calculate optimal artwork dimensions (aspect ratio ~1.65 width per character height for true square)
+	maxArtH := availH - 9
+	if maxArtH > 14 {
+		maxArtH = 14
+	}
+	if maxArtH < 5 {
+		maxArtH = 5
 	}
 
+	artH := maxArtH
+	artW := int(float64(artH) * 1.65)
+	if artW > v.Width-8 {
+		artW = maxInt(v.Width-8, 10)
+		artH = maxInt(int(float64(artW)/1.65), 4)
+	}
+
+	// 1. Centered Cover Art
 	artLines := RenderCoverArt(v.CoverData, artW, artH, v.Tick, !v.Paused)
-	metaLines := v.buildMetadataLines(v.Width - artW - 6)
-
-	if isWide {
-		combinedRows := combineArtAndMeta(artLines, metaLines, artW, v.Width)
-		sb.WriteString(combinedRows)
-		sb.WriteString("\n\n")
-	} else {
-		for _, al := range artLines {
-			sb.WriteString(Center(al, v.Width) + "\n")
-		}
-		sb.WriteString("\n")
-		for _, ml := range metaLines {
-			sb.WriteString(Center(ml, v.Width) + "\n")
-		}
-		sb.WriteString("\n")
+	for _, line := range artLines {
+		sb.WriteString(Center(line, v.Width) + "\n")
 	}
+	sb.WriteString("\n")
 
-	// Dynamic Equalizer visualizer (only when height >= 20)
+	// 2. Track Metadata Centered directly below the artwork
+	maxTextW := minInt(maxInt(v.Width-10, 20), 60)
+
+	// Title (large, bold, vibrant coral pink)
+	title := Trunc(v.Track.DisplayTitle(), maxTextW)
+	sb.WriteString(Center(styles.Primary.Bold(true).Render(title), v.Width) + "\n")
+
+	// Artist (bold, neon cyan)
+	artist := v.Track.Artist
+	if artist == "" {
+		artist = "Unknown Artist"
+	}
+	sb.WriteString(Center(styles.Accent.Bold(true).Render(Trunc(artist, maxTextW)), v.Width) + "\n")
+
+	// Album & Badges
+	var metaParts []string
+	if v.Track.Album != "" {
+		albumStr := v.Track.Album
+		if v.Track.Year > 0 {
+			albumStr += fmt.Sprintf(" (%d)", v.Track.Year)
+		}
+		metaParts = append(metaParts, styles.Subtext.Render(Trunc(albumStr, 30)))
+	}
+	metaParts = append(metaParts, FormatBadge(v.Track.Path))
+	if v.IsFav {
+		metaParts = append(metaParts, styles.FavHeart.Render("♥"))
+	}
+	if v.Track.Genre != "" && maxTextW > 35 {
+		metaParts = append(metaParts, styles.BadgeMuted.Render(Trunc(v.Track.Genre, 14)))
+	}
+	sb.WriteString(Center(strings.Join(metaParts, "  "), v.Width) + "\n\n")
+
+	// 3. Dynamic Audio Spectrum Visualizer Equalizer (if height permits)
 	if availH >= 20 {
-		eqW := minInt(maxInt(v.Width*45/100, 16), 40)
+		eqW := minInt(maxInt(v.Width*45/100, 16), 36)
 		if eqW > 8 {
 			eq := SpectrumEqualizer(eqW, v.Tick, !v.Paused)
 			sb.WriteString(Center(eq, v.Width) + "\n\n")
 		}
 	}
 
-	// High-resolution Progress Bar
+	// 4. High-Precision Progress Bar
 	total := v.Track.Duration
 	var ratio float64
 	if total > 0 {
 		ratio = float64(v.Position) / float64(total)
 	}
-	barWidth := minInt(maxInt(v.Width*55/100, 16), 50)
+	barWidth := minInt(maxInt(v.Width*50/100, 16), 46)
 	sb.WriteString(Center(ProgressBar(ratio, barWidth, v.Position, total), v.Width) + "\n\n")
 
-	// Sleek playback controls (compact when narrow)
+	// 5. Playback Controls
 	var playBtn string
 	if v.Paused {
 		playBtn = styles.BadgeAccent.Render(" PLAY [Space] ")
@@ -126,7 +137,7 @@ func (v *NowPlayingView) View() string {
 	}
 	sb.WriteString(Center(controlsRow, v.Width) + "\n")
 
-	// Status line with Queue, Shuffle, Repeat, Volume (if room permits)
+	// 6. Queue Position / Shuffle / Repeat / Volume Status Line
 	if availH >= 16 {
 		sb.WriteString("\n")
 		queuePill := styles.BadgeMuted.Render(fmt.Sprintf("%d/%d", v.QueuePos+1, v.QueueLen))
@@ -155,7 +166,7 @@ func (v *NowPlayingView) View() string {
 
 	raw := sb.String()
 	lines := strings.Split(raw, "\n")
-	// Trim empty lines from bottom if overflowing
+	// Trim trailing empty lines if overflowing
 	for len(lines) > availH {
 		if lines[len(lines)-1] == "" {
 			lines = lines[:len(lines)-1]
@@ -168,79 +179,4 @@ func (v *NowPlayingView) View() string {
 	}
 
 	return strings.Join(lines, "\n")
-}
-
-func (v *NowPlayingView) buildMetadataLines(maxW int) []string {
-	if maxW < 18 {
-		maxW = 18
-	}
-	var lines []string
-
-	// Track Title
-	title := Trunc(v.Track.DisplayTitle(), maxW)
-	lines = append(lines, styles.Primary.Bold(true).Render(title))
-
-	// Artist
-	if v.Track.Artist != "" {
-		lines = append(lines, styles.Accent.Bold(true).Render(Trunc(v.Track.Artist, maxW)))
-	} else {
-		lines = append(lines, styles.Muted.Render("Unknown Artist"))
-	}
-
-	// Album
-	if v.Track.Album != "" {
-		albumStr := v.Track.Album
-		if v.Track.Year > 0 {
-			albumStr += fmt.Sprintf(" (%d)", v.Track.Year)
-		}
-		lines = append(lines, styles.Subtext.Render(Trunc(albumStr, maxW)))
-	}
-
-	// Format / Fav Badges
-	formatBadge := FormatBadge(v.Track.Path)
-	var favBadge string
-	if v.IsFav {
-		favBadge = " " + styles.FavHeart.Render("[♥ LIKED]")
-	}
-
-	var genreBadge string
-	if v.Track.Genre != "" && maxW > 24 {
-		genreBadge = " " + styles.BadgeMuted.Render(Trunc(v.Track.Genre, 14))
-	}
-
-	lines = append(lines, formatBadge+favBadge+genreBadge)
-
-	return lines
-}
-
-func combineArtAndMeta(artLines, metaLines []string, artW, termW int) string {
-	maxRows := maxInt(len(artLines), len(metaLines))
-	artPad := 4
-	totalContentW := artW + artPad + 36
-
-	leftMargin := 0
-	if termW > totalContentW {
-		leftMargin = (termW - totalContentW) / 2
-	}
-	marginStr := strings.Repeat(" ", leftMargin)
-
-	var sb strings.Builder
-	for i := 0; i < maxRows; i++ {
-		var a string
-		if i < len(artLines) {
-			a = artLines[i]
-		} else {
-			a = strings.Repeat(" ", artW)
-		}
-
-		var m string
-		metaIdx := i - (maxRows-len(metaLines))/2
-		if metaIdx >= 0 && metaIdx < len(metaLines) {
-			m = metaLines[metaIdx]
-		}
-
-		sb.WriteString(fmt.Sprintf("%s%s%s%s\n", marginStr, a, strings.Repeat(" ", artPad), m))
-	}
-
-	return strings.TrimRight(sb.String(), "\n")
 }
