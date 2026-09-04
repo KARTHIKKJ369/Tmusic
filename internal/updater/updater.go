@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -62,10 +63,7 @@ func CheckAndUpdate(currentVersion string, force bool) error {
 		return fmt.Errorf("decode release metadata: %w", err)
 	}
 
-	latestVer := strings.TrimPrefix(rel.TagName, "v")
-	currVer := strings.TrimPrefix(currentVersion, "v")
-
-	if latestVer == currVer && !force {
+	if !isNewerVersion(rel.TagName, currentVersion) && !force {
 		fmt.Printf("✓ muse is already up to date (%s)\n", currentVersion)
 		return nil
 	}
@@ -90,24 +88,25 @@ func CheckAndUpdate(currentVersion string, force bool) error {
 		return fmt.Errorf("extract binary from %s: %w", assetName, err)
 	}
 
-	// Install binary
+	// Install binary to all detected installation locations
 	targetPaths := determineTargetPaths()
-	var installedPath string
+	var installedPaths []string
 	for _, target := range targetPaths {
 		if err := installBinary(binData, target); err == nil {
-			installedPath = target
-			break
+			installedPaths = append(installedPaths, target)
 		}
 	}
 
-	if installedPath == "" {
+	if len(installedPaths) == 0 {
 		return fmt.Errorf("failed to write binary to target paths: %v", targetPaths)
 	}
 
 	fmt.Println()
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Printf("  ✓ Successfully updated muse to %s!\n", rel.TagName)
-	fmt.Printf("    Installed to: %s\n", installedPath)
+	for _, p := range installedPaths {
+		fmt.Printf("    Installed to: %s\n", p)
+	}
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println()
 
@@ -224,30 +223,49 @@ func extractBinary(data []byte, filename string) ([]byte, error) {
 
 func determineTargetPaths() []string {
 	var paths []string
+	seen := make(map[string]bool)
 
-	// Current executable path if writable
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		paths = append(paths, p)
+	}
+
+	// Current executable path if available
 	if execPath, err := os.Executable(); err == nil {
-		execPath, _ = filepath.EvalSymlinks(execPath)
-		if execPath != "" {
-			paths = append(paths, execPath)
+		if realPath, err := filepath.EvalSymlinks(execPath); err == nil && realPath != "" {
+			add(realPath)
+		} else if execPath != "" {
+			add(execPath)
+		}
+	}
+
+	// Check if muse is resolved in user's PATH
+	if lp, err := exec.LookPath("muse"); err == nil {
+		if realPath, err := filepath.EvalSymlinks(lp); err == nil && realPath != "" {
+			add(realPath)
+		} else if lp != "" {
+			add(lp)
 		}
 	}
 
 	if runtime.GOOS == "windows" {
 		localApp := os.Getenv("LOCALAPPDATA")
 		if localApp != "" {
-			paths = append(paths, filepath.Join(localApp, "Programs", "muse", "muse.exe"))
+			add(filepath.Join(localApp, "Programs", "muse", "muse.exe"))
 		}
 		userProfile := os.Getenv("USERPROFILE")
 		if userProfile != "" {
-			paths = append(paths, filepath.Join(userProfile, "bin", "muse.exe"))
+			add(filepath.Join(userProfile, "bin", "muse.exe"))
 		}
 	} else {
 		home, _ := os.UserHomeDir()
 		if home != "" {
-			paths = append(paths, filepath.Join(home, ".local", "bin", "muse"))
+			add(filepath.Join(home, ".local", "bin", "muse"))
 		}
-		paths = append(paths, "/usr/local/bin/muse")
+		add("/usr/local/bin/muse")
 	}
 
 	return paths
@@ -274,6 +292,11 @@ func installBinary(data []byte, targetPath string) error {
 		return err
 	}
 
+	// Unlink existing target on Unix/macOS so active processes release the inode cleanly
+	if runtime.GOOS != "windows" {
+		_ = os.Remove(targetPath)
+	}
+
 	if err := os.Rename(tmpFile, targetPath); err != nil {
 		_ = os.Remove(tmpFile)
 		// Fallback to direct write if rename fails
@@ -283,4 +306,34 @@ func installBinary(data []byte, targetPath string) error {
 	}
 
 	return os.Chmod(targetPath, 0o755)
+}
+
+// isNewerVersion returns true if remoteVer is strictly newer than currentVer.
+func isNewerVersion(remoteVer, currentVer string) bool {
+	remoteParts := parseVersion(remoteVer)
+	currParts := parseVersion(currentVer)
+	for i := 0; i < len(remoteParts) && i < len(currParts); i++ {
+		if remoteParts[i] > currParts[i] {
+			return true
+		}
+		if remoteParts[i] < currParts[i] {
+			return false
+		}
+	}
+	return len(remoteParts) > len(currParts)
+}
+
+func parseVersion(v string) []int {
+	v = strings.TrimPrefix(v, "v")
+	if idx := strings.IndexAny(v, "+-"); idx != -1 {
+		v = v[:idx]
+	}
+	parts := strings.Split(v, ".")
+	var nums []int
+	for _, p := range parts {
+		var n int
+		_, _ = fmt.Sscanf(p, "%d", &n)
+		nums = append(nums, n)
+	}
+	return nums
 }

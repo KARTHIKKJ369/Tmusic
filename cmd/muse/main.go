@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,7 +17,18 @@ import (
 	"github.com/KARTHIKKJ369/Tmusic/internal/updater"
 )
 
-const version = "0.1.0"
+// version is injected at build time by GoReleaser via -ldflags "-X main.version=..."
+var version = "0.2.0"
+
+func init() {
+	if version == "" || version == "dev" {
+		if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+			version = strings.TrimPrefix(bi.Main.Version, "v")
+		} else {
+			version = "0.2.0"
+		}
+	}
+}
 
 func printWelcome() {
 	welcome := `
@@ -32,6 +44,7 @@ func printWelcome() {
 
   Commands:
     muse dir <path>    Set music directory & scan library
+    muse online [song] Search & stream online tracks (keyless)
     muse rescan        Refresh library cache after adding songs
     muse info          Show config, tracks, & playlist stats
     muse play [query]  Search & immediately play song
@@ -48,6 +61,7 @@ func printHelp() {
 
   COMMANDS:
     muse                      Launch interactive player
+    muse online [query]       Search & stream millions of tracks online (keyless)
     muse dir <path>           Set music directory and index tracks
     muse rescan               Force rescan and refresh library cache
     muse info                 Show configuration and library statistics
@@ -65,7 +79,7 @@ func printHelp() {
        $ muse
 
   KEYBOARD SHORTCUTS (IN-APP):
-    1, 2, 3, 4      Switch tabs: Library, Playlists, Favourites, Now Playing
+    1, 2, 3, 4, 5   Switch tabs: Library, Playlists, Favourites, Online, Now Playing
     Tab / Shift+Tab Cycle between sections & playlist panes
     s               Shuffle & play random track (moves to Now Playing)
     S / z           Force pick new random track from library
@@ -125,6 +139,13 @@ func main() {
 			}
 			handleSetDir(args[1])
 			return
+		case "online", "--online", "-o":
+			query := ""
+			if len(args) > 1 {
+				query = strings.Join(args[1:], " ")
+			}
+			launchPlayerOnline(query)
+			return
 		case "play":
 			query := ""
 			if len(args) > 1 {
@@ -138,6 +159,8 @@ func main() {
 	// Flag fallback
 	setDirFlag := flag.String("set-dir", "", "Set the music directory and exit")
 	rescanFlag := flag.Bool("rescan", false, "Force rescan of the music library")
+	onlineFlag := flag.Bool("online", false, "Launch directly in online streaming mode")
+	oFlag := flag.Bool("o", false, "Launch directly in online streaming mode")
 	verFlag := flag.Bool("version", false, "Print version and exit")
 	updateFlag := flag.Bool("update", false, "Update muse to latest version")
 	uFlag := flag.Bool("u", false, "Update muse to latest version")
@@ -161,6 +184,14 @@ func main() {
 	}
 	if *setDirFlag != "" {
 		handleSetDir(*setDirFlag)
+		return
+	}
+	if *onlineFlag || *oFlag {
+		query := ""
+		if flag.NArg() > 0 {
+			query = strings.Join(flag.Args(), " ")
+		}
+		launchPlayerOnline(query)
 		return
 	}
 
@@ -270,6 +301,7 @@ func handleInstall() {
 		fatalf("read binary: %v", err)
 	}
 
+	_ = os.Remove(targetPath)
 	if err := os.WriteFile(targetPath, data, 0o755); err != nil {
 		fatalf("write binary to %s: %v", targetPath, err)
 	}
@@ -329,6 +361,38 @@ func launchPlayer(forceRescan bool, autoPlayQuery string) {
 			player.Play()
 		}
 	}
+
+	p := tea.NewProgram(
+		model,
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	)
+	if _, err := p.Run(); err != nil {
+		fatalf("tui: %v", err)
+	}
+}
+
+func launchPlayerOnline(query string) {
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = config.DefaultConfig()
+	}
+
+	idx := library.NewIndex()
+	if cfg.MusicDir != "" {
+		_ = idx.Load()
+	}
+
+	pm := playlist.NewManager()
+	_ = pm.Load()
+
+	player, err := audio.NewPlayer(cfg.Volume)
+	if err != nil {
+		fatalf("audio init: %v", err)
+	}
+
+	model := tui.New(cfg, idx, pm, player)
+	model.SetOnlineMode(query)
 
 	p := tea.NewProgram(
 		model,
