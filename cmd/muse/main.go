@@ -13,6 +13,7 @@ import (
 	"github.com/KARTHIKKJ369/Tmusic/internal/library"
 	"github.com/KARTHIKKJ369/Tmusic/internal/playlist"
 	"github.com/KARTHIKKJ369/Tmusic/internal/tui"
+	"github.com/KARTHIKKJ369/Tmusic/internal/updater"
 )
 
 const version = "0.1.0"
@@ -34,6 +35,7 @@ func printWelcome() {
     muse rescan        Refresh library cache after adding songs
     muse info          Show config, tracks, & playlist stats
     muse play [query]  Search & immediately play song
+    muse update, -u    Update muse to latest release
     muse help          Show full manual & keyboard shortcuts
 `
 	fmt.Println(welcome)
@@ -50,6 +52,7 @@ func printHelp() {
     muse rescan               Force rescan and refresh library cache
     muse info                 Show configuration and library statistics
     muse play [query]         Launch and immediately play matching/random track
+    muse update, -u, --update Check and install latest release
     muse install              Install 'muse' command to ~/.local/bin
     muse help, --help, -h     Show this help guide
     muse version, --version   Print version
@@ -99,6 +102,12 @@ func main() {
 		case "version", "--version", "-v":
 			fmt.Println("muse", version)
 			return
+		case "update", "--update", "-u", "-update":
+			force := len(args) > 1 && (args[1] == "--force" || args[1] == "-f")
+			if err := updater.CheckAndUpdate(version, force); err != nil {
+				fatalf("update: %v", err)
+			}
+			return
 		case "install":
 			handleInstall()
 			return
@@ -130,6 +139,8 @@ func main() {
 	setDirFlag := flag.String("set-dir", "", "Set the music directory and exit")
 	rescanFlag := flag.Bool("rescan", false, "Force rescan of the music library")
 	verFlag := flag.Bool("version", false, "Print version and exit")
+	updateFlag := flag.Bool("update", false, "Update muse to latest version")
+	uFlag := flag.Bool("u", false, "Update muse to latest version")
 	helpFlag := flag.Bool("help", false, "Print help")
 	flag.CommandLine.Init(os.Args[0], flag.ContinueOnError)
 	_ = flag.CommandLine.Parse(args)
@@ -140,6 +151,12 @@ func main() {
 	}
 	if *verFlag {
 		fmt.Println("muse", version)
+		return
+	}
+	if *updateFlag || *uFlag {
+		if err := updater.CheckAndUpdate(version, false); err != nil {
+			fatalf("update: %v", err)
+		}
 		return
 	}
 	if *setDirFlag != "" {

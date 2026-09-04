@@ -10,7 +10,7 @@ import (
 	"github.com/KARTHIKKJ369/Tmusic/internal/tui/styles"
 )
 
-// NowPlayingView is the centered album art & metadata panel with bottom controls.
+// NowPlayingView is the centered album art & metadata panel with responsive controls.
 type NowPlayingView struct {
 	Track     *audio.Track
 	CoverData []byte // embedded picture bytes (JPEG / PNG)
@@ -32,33 +32,52 @@ func (v *NowPlayingView) View() string {
 		msg := "\n\n" + styles.Bold.Render("NO TRACK PLAYING") + "\n\n" +
 			styles.Muted.Render("Go to ") + styles.Amber.Render("[1] Library") +
 			styles.Muted.Render(" or ") + styles.Amber.Render("[3] Favourites") +
-			styles.Muted.Render(" and press ") + styles.Accent.Render("[Enter]") + " to start playback."
+			styles.Muted.Render(" and press ") + styles.Accent.Render("[Enter]") + " to start playback.\n\n" +
+			styles.Muted.Render("Or press ") + styles.Accent.Render("[s]") + styles.Muted.Render(" to shuffle and play random music.")
 		return Center(msg, v.Width)
+	}
+
+	availH := v.Height
+	if availH < 5 {
+		availH = 5
 	}
 
 	var sb strings.Builder
 
-	// Dimensions for artwork
-	artW := 24
-	artH := 12
-	if v.Width < 60 {
-		artW = 18
-		artH = 9
+	// Determine if side-by-side or stacked
+	isWide := v.Width >= 55 && availH >= 12
+
+	var artH, artW int
+	if isWide {
+		// Calculate optimal square art dimensions
+		// Each character row is 2 vertical pixels, so artW = artH * 2 gives a 1:1 square
+		maxArtH := (availH - 6) // leave room for progress bar, controls, status
+		if maxArtH > 16 {
+			maxArtH = 16
+		}
+		if maxArtH < 8 {
+			maxArtH = 8
+		}
+		artH = maxArtH
+		artW = artH * 2
+		if artW > v.Width-25 {
+			artW = maxInt(v.Width-25, 16)
+			artH = artW / 2
+		}
+	} else {
+		// Compact stacked
+		artH = minInt(maxInt((availH-8)/2, 5), 8)
+		artW = artH * 2
 	}
+
 	artLines := RenderCoverArt(v.CoverData, artW, artH, v.Tick, !v.Paused)
+	metaLines := v.buildMetadataLines(v.Width - artW - 6)
 
-	// Build metadata lines
-	metaLines := v.buildMetadataLines(v.Width - artW - 8)
-
-	// If wide enough (>= 60 cols), place Artwork on Left and Metadata on Right
-	if v.Width >= 60 {
+	if isWide {
 		combinedRows := combineArtAndMeta(artLines, metaLines, artW, v.Width)
-		sb.WriteString("\n")
 		sb.WriteString(combinedRows)
 		sb.WriteString("\n\n")
 	} else {
-		// Narrow terminal: stack artwork then metadata centered
-		sb.WriteString("\n")
 		for _, al := range artLines {
 			sb.WriteString(Center(al, v.Width) + "\n")
 		}
@@ -69,11 +88,13 @@ func (v *NowPlayingView) View() string {
 		sb.WriteString("\n")
 	}
 
-	// Dynamic Equalizer visualizer
-	eqW := minInt(v.Width-16, 44)
-	if eqW > 8 {
-		eq := SpectrumEqualizer(eqW, v.Tick, !v.Paused)
-		sb.WriteString(Center(eq, v.Width) + "\n\n")
+	// Dynamic Equalizer visualizer (only when height >= 20)
+	if availH >= 20 {
+		eqW := minInt(maxInt(v.Width*45/100, 16), 40)
+		if eqW > 8 {
+			eq := SpectrumEqualizer(eqW, v.Tick, !v.Paused)
+			sb.WriteString(Center(eq, v.Width) + "\n\n")
+		}
 	}
 
 	// High-resolution Progress Bar
@@ -82,10 +103,10 @@ func (v *NowPlayingView) View() string {
 	if total > 0 {
 		ratio = float64(v.Position) / float64(total)
 	}
-	barWidth := minInt(maxInt(v.Width*60/100, 24), 60)
+	barWidth := minInt(maxInt(v.Width*55/100, 16), 50)
 	sb.WriteString(Center(ProgressBar(ratio, barWidth, v.Position, total), v.Width) + "\n\n")
 
-	// Sleek emoji-free playback controls
+	// Sleek playback controls (compact when narrow)
 	var playBtn string
 	if v.Paused {
 		playBtn = styles.BadgeAccent.Render(" PLAY [Space] ")
@@ -93,45 +114,65 @@ func (v *NowPlayingView) View() string {
 		playBtn = styles.BadgeFormat.Render(" PAUSE [Space] ")
 	}
 
-	prevBtn := styles.BadgeMuted.Render(" PREV [p] ")
-	nextBtn := styles.BadgeMuted.Render(" NEXT [n] ")
-	seekBack := styles.Muted.Render("[-5s ←]")
-	seekFwd := styles.Muted.Render("[+5s →]")
-
-	controlsRow := fmt.Sprintf("%s  %s  %s  %s  %s", prevBtn, seekBack, playBtn, seekFwd, nextBtn)
-	sb.WriteString(Center(controlsRow, v.Width) + "\n\n")
-
-	// Status line with Queue, Shuffle, Repeat, Volume
-	queuePill := styles.BadgeMuted.Render(fmt.Sprintf("TRACK %d/%d", v.QueuePos+1, v.QueueLen))
-
-	var shufflePill string
-	if v.Shuffle {
-		shufflePill = styles.BadgeAccent.Render("SHUFFLE: ON")
+	var controlsRow string
+	if v.Width >= 55 {
+		prevBtn := styles.BadgeMuted.Render(" PREV [p] ")
+		nextBtn := styles.BadgeMuted.Render(" NEXT [n] ")
+		seekBack := styles.Muted.Render("[-5s ←]")
+		seekFwd := styles.Muted.Render("[+5s →]")
+		controlsRow = fmt.Sprintf("%s  %s  %s  %s  %s", prevBtn, seekBack, playBtn, seekFwd, nextBtn)
 	} else {
-		shufflePill = styles.BadgeMuted.Render("SHUFFLE: OFF")
+		controlsRow = fmt.Sprintf("%s  %s  %s", styles.BadgeMuted.Render(" [p] "), playBtn, styles.BadgeMuted.Render(" [n] "))
+	}
+	sb.WriteString(Center(controlsRow, v.Width) + "\n")
+
+	// Status line with Queue, Shuffle, Repeat, Volume (if room permits)
+	if availH >= 16 {
+		sb.WriteString("\n")
+		queuePill := styles.BadgeMuted.Render(fmt.Sprintf("%d/%d", v.QueuePos+1, v.QueueLen))
+
+		var shufflePill string
+		if v.Shuffle {
+			shufflePill = styles.BadgeAccent.Render("SHUF")
+		} else {
+			shufflePill = styles.BadgeMuted.Render("SHUF:OFF")
+		}
+
+		var repeatPill string
+		switch v.Repeat {
+		case config.RepeatTrack:
+			repeatPill = styles.BadgeAccent.Render("REP:1")
+		case config.RepeatQueue:
+			repeatPill = styles.BadgeAccent.Render("REP:ALL")
+		default:
+			repeatPill = styles.BadgeMuted.Render("REP:OFF")
+		}
+
+		volPill := VolumeBar(v.Volume, 6)
+		statusLine := fmt.Sprintf("%s  %s  %s  %s", queuePill, shufflePill, repeatPill, volPill)
+		sb.WriteString(Center(statusLine, v.Width))
 	}
 
-	var repeatPill string
-	switch v.Repeat {
-	case config.RepeatTrack:
-		repeatPill = styles.BadgeAccent.Render("REPEAT: TRACK")
-	case config.RepeatQueue:
-		repeatPill = styles.BadgeAccent.Render("REPEAT: QUEUE")
-	default:
-		repeatPill = styles.BadgeMuted.Render("REPEAT: OFF")
+	raw := sb.String()
+	lines := strings.Split(raw, "\n")
+	// Trim empty lines from bottom if overflowing
+	for len(lines) > availH {
+		if lines[len(lines)-1] == "" {
+			lines = lines[:len(lines)-1]
+		} else {
+			break
+		}
+	}
+	if len(lines) > availH {
+		lines = lines[:availH]
 	}
 
-	volPill := VolumeBar(v.Volume, 8)
-
-	statusLine := fmt.Sprintf("%s   %s   %s   %s", queuePill, shufflePill, repeatPill, volPill)
-	sb.WriteString(Center(statusLine, v.Width))
-
-	return sb.String()
+	return strings.Join(lines, "\n")
 }
 
 func (v *NowPlayingView) buildMetadataLines(maxW int) []string {
-	if maxW < 20 {
-		maxW = 20
+	if maxW < 18 {
+		maxW = 18
 	}
 	var lines []string
 
@@ -155,7 +196,7 @@ func (v *NowPlayingView) buildMetadataLines(maxW int) []string {
 		lines = append(lines, styles.Subtext.Render(Trunc(albumStr, maxW)))
 	}
 
-	// Genre / Format Badges
+	// Format / Fav Badges
 	formatBadge := FormatBadge(v.Track.Path)
 	var favBadge string
 	if v.IsFav {
@@ -163,8 +204,8 @@ func (v *NowPlayingView) buildMetadataLines(maxW int) []string {
 	}
 
 	var genreBadge string
-	if v.Track.Genre != "" {
-		genreBadge = " " + styles.BadgeMuted.Render(Trunc(v.Track.Genre, 16))
+	if v.Track.Genre != "" && maxW > 24 {
+		genreBadge = " " + styles.BadgeMuted.Render(Trunc(v.Track.Genre, 14))
 	}
 
 	lines = append(lines, formatBadge+favBadge+genreBadge)
@@ -193,7 +234,7 @@ func combineArtAndMeta(artLines, metaLines []string, artW, termW int) string {
 		}
 
 		var m string
-		metaIdx := i - (maxRows-len(metaLines))/2 // vertically center metadata relative to art
+		metaIdx := i - (maxRows-len(metaLines))/2
 		if metaIdx >= 0 && metaIdx < len(metaLines) {
 			m = metaLines[metaIdx]
 		}
