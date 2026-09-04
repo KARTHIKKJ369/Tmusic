@@ -68,6 +68,14 @@ func (q *Queue) HasNext() bool {
 	return q.pos+1 < len(q.order)
 }
 
+// PeekNext returns the next track without advancing the queue position.
+func (q *Queue) PeekNext() (audio.Track, bool) {
+	if q.pos+1 < len(q.order) {
+		return q.original[q.order[q.pos+1]], true
+	}
+	return audio.Track{}, false
+}
+
 // HasPrev returns true if there is a track before the current one.
 func (q *Queue) HasPrev() bool {
 	return q.pos > 0
@@ -84,6 +92,15 @@ func (q *Queue) Append(t audio.Track) {
 	idx := len(q.original)
 	q.original = append(q.original, t)
 	q.order = append(q.order, idx)
+}
+
+// Tracks returns all tracks currently in the queue in their playback order.
+func (q *Queue) Tracks() []audio.Track {
+	res := make([]audio.Track, len(q.order))
+	for i, idx := range q.order {
+		res[i] = q.original[idx]
+	}
+	return res
 }
 
 // Shuffle re-orders the queue using a Spotify-style de-clustered shuffle.

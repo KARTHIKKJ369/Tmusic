@@ -2,6 +2,7 @@ package online
 
 import (
 	"testing"
+	"time"
 )
 
 func TestHighResArtworkURL(t *testing.T) {
@@ -45,4 +46,69 @@ func TestCacheDir(t *testing.T) {
 	if dir == "" {
 		t.Fatalf("empty CacheDir")
 	}
+}
+
+func TestFetchSuggestions(t *testing.T) {
+	sugs, err := FetchSuggestions("ente ellam")
+	if err != nil {
+		t.Skipf("network error fetching suggestions: %v", err)
+	}
+	if len(sugs) == 0 {
+		t.Errorf("expected suggestions for 'ente ellam', got 0")
+	}
+	t.Logf("Suggestions: %v", sugs)
+}
+
+func TestCleanYouTubeMetadata(t *testing.T) {
+	raw := "Ente Ellam Ellam Alle Video Song | Meesamadhavan | Dileep | Kavya Madhavan | Vidyasagar"
+	uploader := "Sony Music Malayalam"
+	title, artist := CleanYouTubeMetadata(raw, uploader)
+	if title != "Ente Ellam Ellam Alle" {
+		t.Errorf("expected 'Ente Ellam Ellam Alle', got %q", title)
+	}
+	if artist != "Sony Music Malayalam" {
+		t.Errorf("expected 'Sony Music Malayalam', got %q", artist)
+	}
+}
+
+func TestSearchYouTube(t *testing.T) {
+	tracks, err := SearchYouTube(t.Context(), "ente ellam ellam alle", 3)
+	if err != nil {
+		t.Skipf("youtube search error: %v", err)
+	}
+	if len(tracks) == 0 {
+		t.Fatalf("expected tracks for 'ente ellam ellam alle', got 0")
+	}
+	t.Logf("Found %d tracks: %+v", len(tracks), tracks[0])
+	if tracks[0].Title == "" || tracks[0].ID == "" {
+		t.Errorf("expected non-empty Title and ID: %+v", tracks[0])
+	}
+}
+
+func TestResolveAndCache(t *testing.T) {
+	track := OnlineTrack{
+		ID:     "sZvDWK8bjt8",
+		Title:  "Ente Ellam Ellam Alle",
+		Artist: "Sony Music Malayalam",
+		Source: "youtube",
+	}
+	start := time.Now()
+	path, art, err := ResolveAndCache(t.Context(), track, nil)
+	if err != nil {
+		t.Skipf("resolve error: %v", err)
+	}
+	elapsed := time.Since(start)
+	t.Logf("Resolved and cached in %v -> path: %s (artwork: %d bytes)", elapsed, path, len(art))
+	if path == "" {
+		t.Errorf("expected non-empty audio path")
+	}
+
+	// Verify second call is 0ms instant cache hit
+	start2 := time.Now()
+	cachedPath, _, found := GetCachedTrack(track)
+	elapsed2 := time.Since(start2)
+	if !found || cachedPath != path {
+		t.Errorf("expected instant cache hit, got found=%v, path=%s", found, cachedPath)
+	}
+	t.Logf("Cache hit verified in %v", elapsed2)
 }

@@ -50,6 +50,21 @@ func (t ITunesTrack) HighResArtworkURL() string {
 	return strings.Replace(t.ArtworkUrl100, "100x100bb.jpg", "600x600bb.jpg", 1)
 }
 
+// ToOnlineTrack converts an ITunesTrack to a unified OnlineTrack.
+func (t ITunesTrack) ToOnlineTrack() OnlineTrack {
+	return OnlineTrack{
+		ID:         fmt.Sprintf("itunes_%d", t.TrackID),
+		Title:      t.TrackName,
+		Artist:     t.ArtistName,
+		Album:      t.CollectionName,
+		Duration:   t.Duration(),
+		ArtworkURL: t.HighResArtworkURL(),
+		Source:     "itunes",
+		Year:       t.Year(),
+		Genre:      t.PrimaryGenre,
+	}
+}
+
 type iTunesResponse struct {
 	ResultCount int           `json:"resultCount"`
 	Results     []ITunesTrack `json:"results"`
