@@ -1,0 +1,17 @@
+# Binaries
+/muse
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test & build artifacts
+*.out
+*.test
+dist/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
