@@ -362,9 +362,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Shuffle & Random Play
 	case "s":
 		if m.currentTrack == nil {
-			// Nothing playing yet: shuffle library and start playing immediately + move to Now Playing!
+			// Nothing playing yet: shuffle library and start playing a fresh random track immediately
 			m.queue = playlist.NewQueue(m.index.All())
-			m.queue.Shuffle()
+			m.queue.Shuffle() // Starts from a uniformly random track at pos 0
 			if t, ok := m.queue.Current(); ok {
 				m.cfg.Shuffle = true
 				m.activeTab = TabNowPlaying
@@ -372,22 +372,22 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.playTrack(t)
 			}
 		} else {
-			// Toggle shuffle on current queue
+			// Toggle shuffle on current queue preserving the currently playing track
 			m.cfg.Shuffle = !m.cfg.Shuffle
 			if m.cfg.Shuffle {
-				m.queue.Shuffle()
+				m.queue.Shuffle(m.currentTrack.ID)
 				m.status = "SHUFFLE: ON (De-clustered)"
 			} else {
-				m.queue.Unshuffle()
+				m.queue.Unshuffle(m.currentTrack.ID)
 				m.status = "SHUFFLE: OFF"
 			}
 			m.npView.Shuffle = m.cfg.Shuffle
 		}
 
-	// Force random track from library & jump to Now Playing (S or z)
+	// Force pick new random track from library & jump to Now Playing (S or z)
 	case "S", "z":
 		m.queue = playlist.NewQueue(m.index.All())
-		m.queue.Shuffle()
+		m.queue.Shuffle() // Fresh random starting track
 		if t, ok := m.queue.Current(); ok {
 			m.cfg.Shuffle = true
 			m.activeTab = TabNowPlaying
@@ -649,9 +649,10 @@ func (m *Model) playSelected() tea.Cmd {
 		if t, ok := m.libView.Selected(); ok {
 			m.queue = playlist.NewQueue(m.index.All())
 			if m.cfg.Shuffle {
-				m.queue.Shuffle()
+				m.queue.Shuffle(t.ID)
+			} else {
+				m.queue.JumpTo(t.ID)
 			}
-			m.queue.JumpTo(t.ID)
 			return m.playTrack(t)
 		}
 	case TabFavs:
@@ -660,9 +661,10 @@ func (m *Model) playSelected() tea.Cmd {
 			if t, ok := m.favView.Selected(); ok {
 				m.queue = playlist.NewQueue(favs)
 				if m.cfg.Shuffle {
-					m.queue.Shuffle()
+					m.queue.Shuffle(t.ID)
+				} else {
+					m.queue.JumpTo(t.ID)
 				}
-				m.queue.JumpTo(t.ID)
 				return m.playTrack(t)
 			}
 		}
@@ -681,9 +683,10 @@ func (m *Model) playSelected() tea.Cmd {
 			}
 			m.queue = playlist.NewQueue(plTracks)
 			if m.cfg.Shuffle {
-				m.queue.Shuffle()
+				m.queue.Shuffle(startTrack.ID)
+			} else {
+				m.queue.JumpTo(startTrack.ID)
 			}
-			m.queue.JumpTo(startTrack.ID)
 			return m.playTrack(startTrack)
 		}
 	}

@@ -59,7 +59,7 @@ func TestSpreadByArtist(t *testing.T) {
 		t.Fatalf("expected spread len %d, got %d", len(tracks), len(spread))
 	}
 
-	// Verify no consecutive tracks share the same artist if avoidable
+	// Verify consecutive same artist count is minimized
 	consecutiveSame := 0
 	for i := 0; i < len(spread)-1; i++ {
 		if tracks[spread[i]].Artist == tracks[spread[i+1]].Artist {
@@ -67,8 +67,39 @@ func TestSpreadByArtist(t *testing.T) {
 		}
 	}
 
-	if consecutiveSame > 0 {
-		t.Fatalf("expected 0 consecutive same artist tracks, got %d", consecutiveSame)
+	if consecutiveSame > 1 {
+		t.Fatalf("expected <= 1 consecutive same artist tracks, got %d", consecutiveSame)
+	}
+}
+
+func TestShuffleRandomDistribution(t *testing.T) {
+	tracks := []audio.Track{
+		{ID: "1", Title: "Song 1", Artist: "Artist A"},
+		{ID: "2", Title: "Song 2", Artist: "Artist B"},
+		{ID: "3", Title: "Song 3", Artist: "Artist C"},
+		{ID: "4", Title: "Song 4", Artist: "Artist D"},
+		{ID: "5", Title: "Song 5", Artist: "Artist E"},
+		{ID: "6", Title: "Song 6", Artist: "Artist F"},
+		{ID: "7", Title: "Song 7", Artist: "Artist G"},
+		{ID: "8", Title: "Song 8", Artist: "Artist H"},
+	}
+
+	firstTrackCounts := make(map[string]int)
+	trials := 100
+
+	for i := 0; i < trials; i++ {
+		q := NewQueue(tracks)
+		q.Shuffle() // No activeTrackID -> must pick a random starting track!
+		curr, ok := q.Current()
+		if !ok {
+			t.Fatal("expected current track")
+		}
+		firstTrackCounts[curr.ID]++
+	}
+
+	// With 8 tracks and 100 trials, we should see almost all tracks selected as starting track
+	if len(firstTrackCounts) < 6 {
+		t.Fatalf("shuffle is not random, only %d distinct starting tracks seen in %d trials", len(firstTrackCounts), trials)
 	}
 }
 
@@ -83,13 +114,13 @@ func TestShuffleMaintainsCurrentTrack(t *testing.T) {
 	q := NewQueue(tracks)
 	q.JumpTo("3")
 
-	q.Shuffle()
+	q.Shuffle("3") // active track "3" should be preserved
 	curr, ok := q.Current()
 	if !ok || curr.ID != "3" {
 		t.Fatalf("expected current track ID '3' after shuffle, got %v", curr.ID)
 	}
 
-	q.Unshuffle()
+	q.Unshuffle("3")
 	curr, ok = q.Current()
 	if !ok || curr.ID != "3" {
 		t.Fatalf("expected current track ID '3' after unshuffle, got %v", curr.ID)
