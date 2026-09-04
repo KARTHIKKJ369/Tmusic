@@ -1,7 +1,9 @@
 package playlist
 
 import (
-	"math/rand"
+	"crypto/rand"
+	"math/big"
+	"time"
 
 	"github.com/KARTHIKKJ369/Tmusic/internal/audio"
 )
@@ -78,27 +80,40 @@ func (q *Queue) Len() int { return len(q.order) }
 func (q *Queue) Pos() int { return q.pos }
 
 // Shuffle re-orders the queue using a Spotify-style de-clustered shuffle.
-// It runs Fisher-Yates then spreads tracks so no two consecutive tracks
-// share the same artist. After shuffling it repositions to the currently
-// playing track.
-func (q *Queue) Shuffle() {
-	currentID := ""
-	if t, ok := q.Current(); ok {
-		currentID = t.ID
+// If activeTrackID is supplied, it preserves the currently playing track position.
+// If activeTrackID is omitted/empty, it starts from position 0 with a 100% uniformly random track.
+func (q *Queue) Shuffle(activeTrackID ...string) {
+	if len(q.original) <= 1 {
+		return
 	}
 
-	// Fisher-Yates
-	r := rand.New(rand.NewSource(rand.Int63()))
-	perm := r.Perm(len(q.original))
+	var targetID string
+	if len(activeTrackID) > 0 {
+		targetID = activeTrackID[0]
+	}
 
-	// Spread pass: separate same-artist tracks
+	n := len(q.original)
+	perm := make([]int, n)
+	for i := range perm {
+		perm[i] = i
+	}
+
+	// Fisher-Yates with crypto/rand
+	for i := n - 1; i > 0; i-- {
+		j := cryptoRandInt(i + 1)
+		perm[i], perm[j] = perm[j], perm[i]
+	}
+
+	// Spread pass: separate consecutive same-artist tracks
 	perm = spreadByArtist(perm, q.original)
 
 	q.order = perm
 	q.pos = 0
-	if currentID != "" {
+
+	// If targetID is supplied, locate it and stay on it
+	if targetID != "" {
 		for i, idx := range q.order {
-			if q.original[idx].ID == currentID {
+			if q.original[idx].ID == targetID {
 				q.pos = i
 				break
 			}
@@ -107,18 +122,18 @@ func (q *Queue) Shuffle() {
 }
 
 // Unshuffle restores the original order.
-func (q *Queue) Unshuffle() {
-	currentID := ""
-	if t, ok := q.Current(); ok {
-		currentID = t.ID
+func (q *Queue) Unshuffle(activeTrackID ...string) {
+	var targetID string
+	if len(activeTrackID) > 0 {
+		targetID = activeTrackID[0]
 	}
 	for i := range q.order {
 		q.order[i] = i
 	}
 	q.pos = 0
-	if currentID != "" {
+	if targetID != "" {
 		for i, idx := range q.order {
-			if q.original[idx].ID == currentID {
+			if q.original[idx].ID == targetID {
 				q.pos = i
 				break
 			}
@@ -135,55 +150,43 @@ func (q *Queue) recordHistory() {
 	}
 }
 
-// spreadByArtist rearranges perm so consecutive entries don't share an artist.
-// Uses a greedy algorithm: always pick the candidate with the most-different artist
-// from the previous pick.
+// spreadByArtist rearranges consecutive same-artist tracks using lookahead swaps.
+// Preserves the randomized order of perm[0] while eliminating clusters.
 func spreadByArtist(perm []int, tracks []audio.Track) []int {
-	if len(perm) <= 1 {
+	if len(perm) <= 2 {
 		return perm
 	}
 
-	// Build a frequency map: artist → remaining count.
-	freq := make(map[string]int)
-	available := make([]int, len(perm))
-	copy(available, perm)
+	result := make([]int, len(perm))
+	copy(result, perm)
 
-	for _, idx := range perm {
-		freq[tracks[idx].Artist]++
-	}
+	for i := 1; i < len(result)-1; i++ {
+		currArtist := tracks[result[i]].Artist
+		prevArtist := tracks[result[i-1]].Artist
 
-	result := make([]int, 0, len(perm))
-	lastArtist := ""
-
-	for len(available) > 0 {
-		// Try to pick a track with a different artist.
-		chosen := -1
-		chosenArtist := ""
-		maxFreq := -1
-
-		for i, idx := range available {
-			artist := tracks[idx].Artist
-			if artist == lastArtist {
-				continue
-			}
-			if freq[artist] > maxFreq {
-				maxFreq = freq[artist]
-				chosen = i
-				chosenArtist = artist
+		if currArtist != "" && currArtist == prevArtist {
+			// Find a subsequent track with a different artist
+			for j := i + 1; j < len(result); j++ {
+				candArtist := tracks[result[j]].Artist
+				if candArtist != prevArtist {
+					result[i], result[j] = result[j], result[i]
+					break
+				}
 			}
 		}
-
-		// Fallback: no different artist available.
-		if chosen == -1 {
-			chosen = 0
-			chosenArtist = tracks[available[0]].Artist
-		}
-
-		result = append(result, available[chosen])
-		freq[chosenArtist]--
-		lastArtist = chosenArtist
-		available = append(available[:chosen], available[chosen+1:]...)
 	}
 
 	return result
+}
+
+func cryptoRandInt(max int) int {
+	if max <= 0 {
+		return 0
+	}
+	nBig, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	if err == nil {
+		return int(nBig.Int64())
+	}
+	// Fallback to nanotime
+	return int(time.Now().UnixNano() % int64(max))
 }
