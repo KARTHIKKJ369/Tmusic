@@ -17,12 +17,34 @@ import (
 
 const version = "0.1.0"
 
+func printWelcome() {
+	welcome := `
+  ╭─────────────────────────────────────────────────────────────╮
+  │   MUSE // High-Performance Terminal Music Player (v` + version + `)   │
+  │   Pure Go · FLAC, MP3, WAV, OGG · Smart Shuffle · Art       │
+  ╰─────────────────────────────────────────────────────────────╯
+
+  Welcome! To get started, configure your music folder:
+
+    $ muse dir ~/Music
+    (or any folder containing your .flac, .mp3, .wav, or .ogg files)
+
+  Commands:
+    muse dir <path>    Set music directory & scan library
+    muse rescan        Refresh library cache after adding songs
+    muse info          Show config, tracks, & playlist stats
+    muse play [query]  Search & immediately play song
+    muse help          Show full manual & keyboard shortcuts
+`
+	fmt.Println(welcome)
+}
+
 func printHelp() {
 	helpText := `
-  MUSE // High-Performance Terminal Music Player (v` + version + `)
+  MUSE // High-Performance Terminal Audio Player (v` + version + `)
   Pure Go · FLAC, MP3, WAV, OGG · Smart Shuffle · Album Art
 
-  USAGE:
+  COMMANDS:
     muse                      Launch interactive player
     muse dir <path>           Set music directory and index tracks
     muse rescan               Force rescan and refresh library cache
@@ -40,15 +62,17 @@ func printHelp() {
        $ muse
 
   KEYBOARD SHORTCUTS (IN-APP):
-    1, 2, 3, 4      Switch views: Library, Playlists, Favourites, Now Playing
+    1, 2, 3, 4      Switch tabs: Library, Playlists, Favourites, Now Playing
     Tab / Shift+Tab Cycle between sections & playlist panes
-    s               Shuffle & play random track / toggle de-clustered shuffle
+    s               Shuffle & play random track (moves to Now Playing)
+    S / z           Force pick new random track from library
     Space           Play / Pause
+    Enter           Play selected track or playlist
     n / p           Next / Previous track in queue
-    → / ←           Seek ±5s
-    Shift+→ / ←     Seek ±30s
-    0-9             Jump to 0% - 90% in Now Playing
-    g or :          Jump to exact time (e.g. 1:30 or 90s or 50%)
+    → / ←           Seek backward / forward ±5s
+    Shift+→ / ←     Seek backward / forward ±30s (or H / L)
+    0 - 9           Jump to 0% - 90% position in track
+    g or :          Jump to exact time (e.g. 1:30, 90s, 50%)
     + / -           Volume up / down (5% steps)
     m               Mute / Unmute
     r               Cycle Repeat (Off → Track → Queue)
@@ -129,12 +153,9 @@ func main() {
 		fatalf("config load: %v", err)
 	}
 
-	// If no music directory is configured, display the help guide!
+	// If no music directory is configured, display the welcome onboarding guide!
 	if cfg.MusicDir == "" {
-		printHelp()
-		fmt.Println("  [!] No music directory configured yet.")
-		fmt.Println("      Run: muse dir /path/to/your/music")
-		fmt.Println()
+		printWelcome()
 		os.Exit(0)
 	}
 
