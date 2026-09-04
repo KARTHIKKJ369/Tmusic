@@ -6,6 +6,20 @@ Supports **FLAC**, **MP3**, **WAV**, and **OGG** with zero runtime dependencies 
 
 ---
 
+## ⚡ 1-Line Installation
+
+**For macOS (Apple Silicon & Intel) & Linux:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/KARTHIKKJ369/Tmusic/main/install.sh | bash
+```
+
+**Or via Go:**
+```bash
+go install github.com/KARTHIKKJ369/Tmusic/cmd/muse@latest
+```
+
+---
+
 ## ✨ Features
 
 - 🚀 **Run From Anywhere**: Installed to `~/.local/bin/muse` — simply type `muse` in your terminal.

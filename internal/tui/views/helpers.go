@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/karthikjayan/muse/internal/tui/styles"
+	"github.com/KARTHIKKJ369/Tmusic/internal/tui/styles"
 )
 
 // FormatDur formats a duration as M:SS or H:MM:SS.

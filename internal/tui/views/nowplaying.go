@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/karthikjayan/muse/internal/audio"
-	"github.com/karthikjayan/muse/internal/config"
-	"github.com/karthikjayan/muse/internal/tui/styles"
+	"github.com/KARTHIKKJ369/Tmusic/internal/audio"
+	"github.com/KARTHIKKJ369/Tmusic/internal/config"
+	"github.com/KARTHIKKJ369/Tmusic/internal/tui/styles"
 )
 
 // NowPlayingView is the centered album art & metadata panel with bottom controls.

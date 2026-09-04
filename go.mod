@@ -1,4 +1,4 @@
-module github.com/karthikjayan/muse
+module github.com/KARTHIKKJ369/Tmusic
 
 go 1.26.5
 

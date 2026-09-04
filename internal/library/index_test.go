@@ -3,7 +3,7 @@ package library
 import (
 	"testing"
 
-	"github.com/karthikjayan/muse/internal/audio"
+	"github.com/KARTHIKKJ369/Tmusic/internal/audio"
 )
 
 func TestIndexOperations(t *testing.T) {

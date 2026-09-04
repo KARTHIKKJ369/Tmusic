@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/karthikjayan/muse/internal/audio"
-	"github.com/karthikjayan/muse/internal/playlist"
-	"github.com/karthikjayan/muse/internal/tui/styles"
+	"github.com/KARTHIKKJ369/Tmusic/internal/audio"
+	"github.com/KARTHIKKJ369/Tmusic/internal/playlist"
+	"github.com/KARTHIKKJ369/Tmusic/internal/tui/styles"
 )
 
 // PlaylistsView renders a dual-pane playlist manager.

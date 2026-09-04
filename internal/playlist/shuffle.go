@@ -3,7 +3,7 @@ package playlist
 import (
 	"math/rand"
 
-	"github.com/karthikjayan/muse/internal/audio"
+	"github.com/KARTHIKKJ369/Tmusic/internal/audio"
 )
 
 // Queue is the active playback queue with shuffle support.
