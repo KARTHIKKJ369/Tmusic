@@ -2,7 +2,6 @@ package views
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"image"
 	"image/color"
@@ -10,57 +9,21 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"math"
-	"os"
 	"strings"
 
 	"golang.org/x/image/draw"
 )
 
-// SupportsInlineImages detects if the current terminal supports native inline image protocols.
-// Supported by iTerm2, Ghostty, WezTerm, VS Code terminal, Tabby, Warp, Kitty, etc.
-func SupportsInlineImages() bool {
-	termProg := os.Getenv("TERM_PROGRAM")
-	if termProg == "iTerm.app" || termProg == "ghostty" || termProg == "WezTerm" ||
-		termProg == "vscode" || termProg == "Tabby" || termProg == "WarpTerminal" {
-		return true
-	}
-	if os.Getenv("LC_TERMINAL") == "iTerm2" {
-		return true
-	}
-	if os.Getenv("KITTY_WINDOW_ID") != "" || os.Getenv("TERM") == "xterm-kitty" {
-		return true
-	}
-	if os.Getenv("GHOSTTY_RESOURCES_DIR") != "" || os.Getenv("WEZTERM_EXECUTABLE") != "" {
-		return true
-	}
-	return false
-}
-
-// RenderCoverArt renders cover art using native GPU inline images if supported,
-// or falls back to enhanced TrueColor ANSI half-blocks (▀) or an animated vinyl disc.
+// RenderCoverArt converts image bytes into high-definition ANSI truecolor half-block art (▀).
+// targetWidth is character columns; targetHeight is character rows (each row = 2 vertical pixels).
 func RenderCoverArt(data []byte, targetWidth, targetHeight int, tick int64, isPlaying bool) []string {
 	if len(data) > 0 {
-		if SupportsInlineImages() {
-			return renderInlineImage(data, targetWidth, targetHeight)
-		}
 		if lines, err := decodeAndRenderANSI(data, targetWidth, targetHeight); err == nil && len(lines) > 0 {
 			return lines
 		}
 	}
 	// Fallback to geometric animated vinyl disc art
 	return renderVinylArt(targetWidth, targetHeight, tick, isPlaying)
-}
-
-func renderInlineImage(data []byte, targetWidth, targetHeight int) []string {
-	b64 := base64.StdEncoding.EncodeToString(data)
-	imgSeq := fmt.Sprintf("\x1b]1337;File=inline=1;width=%d;height=%d;preserveAspectRatio=1:%s\a", targetWidth, targetHeight, b64)
-
-	lines := make([]string, targetHeight)
-	lines[0] = imgSeq + strings.Repeat(" ", targetWidth)
-	for y := 1; y < targetHeight; y++ {
-		lines[y] = strings.Repeat(" ", targetWidth)
-	}
-	return lines
 }
 
 func decodeAndRenderANSI(data []byte, targetWidth, targetHeight int) ([]string, error) {
@@ -98,8 +61,8 @@ func decodeAndRenderANSI(data []byte, targetWidth, targetHeight int) ([]string, 
 	// High quality bicubic scaling with Catmull-Rom resampling
 	draw.CatmullRom.Scale(dst, dst.Bounds(), src, cropRect, draw.Over, nil)
 
-	// Apply sharpening & contrast enhancement filter to bring out typography & artwork details
-	sharpened := enhanceContrastAndSharpen(dst)
+	// Apply vibrancy & gamma optimization for rich terminal truecolor display
+	enhanced := enhanceVibrancy(dst)
 
 	lines := make([]string, targetHeight)
 	for y := 0; y < targetHeight; y++ {
@@ -108,8 +71,8 @@ func decodeAndRenderANSI(data []byte, targetWidth, targetHeight int) ([]string, 
 		botY := y*2 + 1
 
 		for x := 0; x < targetWidth; x++ {
-			topCol := sharpened.RGBAAt(x, topY)
-			botCol := sharpened.RGBAAt(x, botY)
+			topCol := enhanced.RGBAAt(x, topY)
+			botCol := enhanced.RGBAAt(x, botY)
 
 			// Alpha blend over background if transparent
 			tr, tg, tb := blendAlpha(topCol, 18, 18, 30)
@@ -126,36 +89,30 @@ func decodeAndRenderANSI(data []byte, targetWidth, targetHeight int) ([]string, 
 	return lines, nil
 }
 
-// enhanceContrastAndSharpen enhances edge contrast for downsampled album art
-func enhanceContrastAndSharpen(src *image.RGBA) *image.RGBA {
+// enhanceVibrancy optimizes color vibrancy and dynamic range for ANSI truecolor display.
+func enhanceVibrancy(src *image.RGBA) *image.RGBA {
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
 	out := image.NewRGBA(b)
 
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			if x == 0 || y == 0 || x == w-1 || y == h-1 {
-				out.SetRGBA(x, y, src.RGBAAt(x, y))
-				continue
-			}
-
 			c := src.RGBAAt(x, y)
-			up := src.RGBAAt(x, y-1)
-			down := src.RGBAAt(x, y+1)
-			left := src.RGBAAt(x-1, y)
-			right := src.RGBAAt(x+1, y)
+			rf := float64(c.R) / 255.0
+			gf := float64(c.G) / 255.0
+			bf := float64(c.B) / 255.0
 
-			// Unsharp mask 3x3 kernel (Laplacian edge detector)
-			r := clampUint8(int(c.R)*5 - int(up.R) - int(down.R) - int(left.R) - int(right.R))
-			g := clampUint8(int(c.G)*5 - int(up.G) - int(down.G) - int(left.G) - int(right.G))
-			bl := clampUint8(int(c.B)*5 - int(up.B) - int(down.B) - int(left.B) - int(right.B))
+			// Subtle S-curve enhancement
+			rf = math.Pow(rf, 0.95)
+			gf = math.Pow(gf, 0.95)
+			bf = math.Pow(bf, 0.95)
 
-			// Blend 50% sharpened with 50% original for clean natural sharpness
-			finalR := uint8(float64(r)*0.5 + float64(c.R)*0.5)
-			finalG := uint8(float64(g)*0.5 + float64(c.G)*0.5)
-			finalB := uint8(float64(bl)*0.5 + float64(c.B)*0.5)
-
-			out.SetRGBA(x, y, color.RGBA{R: finalR, G: finalG, B: finalB, A: c.A})
+			out.SetRGBA(x, y, color.RGBA{
+				R: clampUint8(int(rf * 255.0)),
+				G: clampUint8(int(gf * 255.0)),
+				B: clampUint8(int(bf * 255.0)),
+				A: c.A,
+			})
 		}
 	}
 	return out

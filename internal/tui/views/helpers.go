@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/KARTHIKKJ369/Tmusic/internal/tui/styles"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // FormatDur formats a duration as M:SS or H:MM:SS.
@@ -157,24 +158,9 @@ func Center(s string, width int) string {
 	return strings.Repeat(" ", pad) + s
 }
 
-// VisibleLen counts visible characters by stripping ANSI escape sequences.
+// VisibleLen counts visible characters by stripping all ANSI escape sequences via lipgloss.
 func VisibleLen(s string) int {
-	inEscape := false
-	count := 0
-	for _, r := range s {
-		if r == '\x1b' {
-			inEscape = true
-			continue
-		}
-		if inEscape {
-			if r == 'm' {
-				inEscape = false
-			}
-			continue
-		}
-		count++
-	}
-	return count
+	return lipgloss.Width(s)
 }
 
 func Pad(s string, width int) string {
