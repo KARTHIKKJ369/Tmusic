@@ -951,41 +951,71 @@ func (m *Model) renderPlaylistPicker() string {
 }
 
 func (m *Model) renderHelp() string {
-	help := `
-  ╭──────────────────────────────────────────────────────────╮
-  │                 MUSE // KEYBOARD GUIDE                   │
-  ├──────────────────────────────────────────────────────────┤
-  │  NAVIGATION & TABS                                       │
-  │    1, 2, 3, 4      Go to Library, Playlists, Favs, Now   │
-  │    Tab / Shift+Tab Cycle between sections / panes        │
-  │    ↑ / ↓ or j / k  Navigate lists                        │
-  │    ← / → or h / l  Switch playlist panes (left/right)    │
-  │                                                          │
-  │  PLAYBACK CONTROLS                                       │
-  │    s               Shuffle & play random (moves to Now)  │
-  │    S / z           Force pick new random track           │
-  │    Space           Play / Pause                          │
-  │    Enter           Play selected track / playlist        │
-  │    n / p           Next / Previous track in queue        │
-  │    → / ←           Seek +5s / -5s                        │
-  │    Shift+→ / ←     Seek +30s / -30s (or H / L)           │
-  │    0 - 9           Jump to 0% - 90% in Now Playing       │
-  │    g or :          Jump to exact time (e.g. 1:30, 50%)   │
-  │    + / -           Volume up / down                      │
-  │    m               Mute / Unmute                         │
-  │    r               Cycle Repeat (Off → Track → Queue)    │
-  │                                                          │
-  │  PLAYLISTS & FAVOURITES                                  │
-  │    f               Toggle favourite heart (♥)            │
-  │    a               Add selected track to a playlist      │
-  │    c               Create new playlist                   │
-  │    d / x           Delete playlist or song from playlist │
-  │    /               Live search filter                    │
-  │    ?               Toggle this help popup                │
-  │    q               Quit and save state                   │
-  ╰──────────────────────────────────────────────────────────╯
-`
-	modal := styles.Modal.Render(help)
+	var sb strings.Builder
+	sb.WriteString(styles.Bold.Render("MUSE // KEYBOARD SHORTCUTS") + "\n\n")
+
+	type shortcut struct {
+		key  string
+		desc string
+	}
+
+	type section struct {
+		title string
+		items []shortcut
+	}
+
+	sections := []section{
+		{
+			title: "NAVIGATION",
+			items: []shortcut{
+				{"1, 2, 3, 4", "Switch to Library, Playlists, Favs, Now Playing"},
+				{"Tab / Shift+Tab", "Cycle focus between sections & panes"},
+				{"↑ / ↓ (j / k)", "Navigate song & playlist lists"},
+				{"← / → (h / l)", "Switch playlist panes (left/right)"},
+			},
+		},
+		{
+			title: "PLAYBACK & CONTROLS",
+			items: []shortcut{
+				{"s", "Shuffle & play random (moves to Now Playing)"},
+				{"S / z", "Force pick new random track from library"},
+				{"Space", "Play / Pause"},
+				{"Enter", "Play selected track or playlist"},
+				{"n / p", "Next / Previous track in queue"},
+				{"→ / ←", "Seek ±5s (Shift+→ / Shift+← for ±30s)"},
+				{"0 - 9", "Jump to 0% - 90% position in track"},
+				{"g or :", "Jump to exact time (e.g. 1:30, 90s, 50%)"},
+				{"+ / -", "Volume up / down (5% steps)"},
+				{"m", "Mute / Unmute"},
+				{"r", "Cycle Repeat (Off → Track → Queue)"},
+			},
+		},
+		{
+			title: "PLAYLISTS & SEARCH",
+			items: []shortcut{
+				{"f", "Toggle favourite heart (♥)"},
+				{"a", "Add selected track to playlist"},
+				{"c", "Create new playlist"},
+				{"d / x", "Delete playlist or remove track"},
+				{"/", "Live fuzzy search filter"},
+				{"?", "Close this help cheatsheet"},
+				{"q / Ctrl+C", "Quit and save player state"},
+			},
+		},
+	}
+
+	for _, sec := range sections {
+		sb.WriteString(styles.Primary.Render("  "+sec.title) + "\n")
+		for _, item := range sec.items {
+			keyPill := styles.KeyHint.Render(fmt.Sprintf("%-18s", item.key))
+			desc := styles.Subtext.Render(item.desc)
+			sb.WriteString(fmt.Sprintf("    %s %s\n", keyPill, desc))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString(styles.Muted.Render("  [?] or [Esc] to close guide"))
+	modal := styles.Modal.Render(sb.String())
 	return views.Center(modal, m.width)
 }
 

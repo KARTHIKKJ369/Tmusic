@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/gopxl/beep"
-	"github.com/gopxl/beep/flac"
 	"github.com/gopxl/beep/mp3"
 	"github.com/gopxl/beep/vorbis"
 	"github.com/gopxl/beep/wav"
@@ -41,7 +40,7 @@ func decode(path string) (decoded, error) {
 		}
 		return decoded{s, fmt_}, nil
 	case "flac":
-		s, fmt_, err := flac.Decode(f)
+		s, fmt_, err := robustFLACDecode(f)
 		if err != nil {
 			f.Close()
 			return decoded{}, err

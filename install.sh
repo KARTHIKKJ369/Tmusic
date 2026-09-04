@@ -9,24 +9,39 @@ VERSION="latest"
 
 echo "==> Installing muse..."
 
-# Detect OS & Architecture
-OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-ARCH="$(uname -m)"
-
-case "$ARCH" in
-    x86_64|amd64)
-        ARCH="amd64"
+# Detect OS
+UNAME_OS="$(uname -s)"
+case "$UNAME_OS" in
+    Darwin)
+        OS="Darwin"
         ;;
-    arm64|aarch64)
-        ARCH="arm64"
+    Linux)
+        OS="Linux"
         ;;
     *)
-        echo "Error: Unsupported architecture: $ARCH"
+        echo "Error: Unsupported operating system: $UNAME_OS"
         exit 1
         ;;
 esac
 
-# Target install directory
+# Detect Architecture
+UNAME_ARCH="$(uname -m)"
+case "$UNAME_ARCH" in
+    x86_64|amd64)
+        ARCH="x86_64"
+        ARCH_ALT="amd64"
+        ;;
+    arm64|aarch64)
+        ARCH="arm64"
+        ARCH_ALT="arm64"
+        ;;
+    *)
+        echo "Error: Unsupported architecture: $UNAME_ARCH"
+        exit 1
+        ;;
+esac
+
+# Determine installation directory
 if [ -w "/usr/local/bin" ]; then
     BIN_DIR="/usr/local/bin"
 elif [ -d "$HOME/.local/bin" ]; then
@@ -36,38 +51,72 @@ else
     BIN_DIR="$HOME/.local/bin"
 fi
 
-# If Go is installed, build from source or install
-if command -v go >/dev/null 2>&1; then
-    echo "==> Go detected. Installing via 'go install'..."
-    GOBIN="$BIN_DIR" go install "github.com/$REPO/cmd/muse@$VERSION" || {
-        echo "==> Downloading pre-built release binary..."
-        DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/muse_${OS}_${ARCH}.tar.gz"
-        TMP_DIR="$(mktemp -d)"
-        curl -fsSL "$DOWNLOAD_URL" | tar -xz -C "$TMP_DIR"
-        mv "$TMP_DIR/muse" "$BIN_DIR/muse"
-        rm -rf "$TMP_DIR"
-    }
-else
-    echo "==> Downloading pre-built release binary for ${OS}_${ARCH}..."
-    DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/muse_${OS}_${ARCH}.tar.gz"
-    TMP_DIR="$(mktemp -d)"
-    if curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/muse.tar.gz" 2>/dev/null; then
+TMP_DIR="$(mktemp -d)"
+cleanup() {
+    rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
+
+INSTALLED=0
+
+# Candidate URLs for release tarball
+URLS=(
+    "https://github.com/$REPO/releases/latest/download/muse_${OS}_${ARCH}.tar.gz"
+    "https://github.com/$REPO/releases/latest/download/Tmusic_${OS}_${ARCH}.tar.gz"
+    "https://github.com/$REPO/releases/latest/download/muse_${OS}_${ARCH_ALT}.tar.gz"
+    "https://github.com/$REPO/releases/latest/download/Tmusic_${OS}_${ARCH_ALT}.tar.gz"
+)
+
+echo "==> Checking for pre-built release binary (${OS} ${ARCH})..."
+
+for URL in "${URLS[@]}"; do
+    if curl -fsSL "$URL" -o "$TMP_DIR/muse.tar.gz" 2>/dev/null; then
+        echo "==> Downloaded release from: $URL"
         tar -xzf "$TMP_DIR/muse.tar.gz" -C "$TMP_DIR"
-        mv "$TMP_DIR/muse" "$BIN_DIR/muse"
-        rm -rf "$TMP_DIR"
+        if [ -f "$TMP_DIR/muse" ]; then
+            mv "$TMP_DIR/muse" "$BIN_DIR/muse"
+            chmod +x "$BIN_DIR/muse"
+            INSTALLED=1
+            break
+        fi
+    fi
+done
+
+# Fallback: go install if Go is installed
+if [ "$INSTALLED" -eq 0 ]; then
+    if command -v go >/dev/null 2>&1; then
+        echo "==> Pre-built release not found, building from source via 'go install'..."
+        GOBIN="$BIN_DIR" go install "github.com/$REPO/cmd/muse@latest"
+        INSTALLED=1
     else
-        echo "==> Release binary not found yet. Please install Go (https://go.dev) and run: go install github.com/$REPO/cmd/muse@latest"
-        rm -rf "$TMP_DIR"
+        echo "Error: Could not download pre-built release binary."
+        echo "Please install Go (https://go.dev) and run: go install github.com/$REPO/cmd/muse@latest"
         exit 1
     fi
 fi
 
-chmod +x "$BIN_DIR/muse"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  ✓ MUSE has been installed successfully to:"
+echo "    $BIN_DIR/muse"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
 
+# Ensure BIN_DIR is in PATH
+case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *)
+        echo "Notice: $BIN_DIR is not in your PATH."
+        echo "Add it to your shell configuration (e.g. ~/.bashrc or ~/.zshrc):"
+        echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+        echo ""
+        ;;
+esac
+
+echo "Quick Start:"
+echo "  1. Set your music folder (only once):"
+echo "     muse dir ~/Music"
 echo ""
-echo "✓ Success! 'muse' has been installed to $BIN_DIR/muse"
-echo ""
-echo "To get started:"
-echo "  1. Set your music folder:  muse dir ~/Music"
-echo "  2. Start listening:        muse"
+echo "  2. Start listening:"
+echo "     muse"
 echo ""
