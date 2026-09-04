@@ -49,6 +49,13 @@ archives:
 checksum:
   name_template: 'checksums.txt'
 
+release:
+  github:
+    owner: KARTHIKKJ369
+    name: Tmusic
+  mode: replace
+  make_latest: true
+
 changelog:
   sort: asc
   filters:
