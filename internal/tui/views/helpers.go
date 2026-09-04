@@ -9,6 +9,7 @@ import (
 
 	"github.com/KARTHIKKJ369/Tmusic/internal/tui/styles"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // FormatDur formats a duration as M:SS or H:MM:SS.
@@ -166,7 +167,7 @@ func VisibleLen(s string) int {
 func Pad(s string, width int) string {
 	vLen := VisibleLen(s)
 	if vLen >= width {
-		return s[:width]
+		return ansi.Truncate(s, width, "")
 	}
 	return s + strings.Repeat(" ", width-vLen)
 }
@@ -175,13 +176,14 @@ func Trunc(s string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	if len(s) > width {
+	vLen := VisibleLen(s)
+	if vLen > width {
 		if width > 3 {
-			return s[:width-3] + "..."
+			return ansi.Truncate(s, width, "...")
 		}
-		return s[:width]
+		return ansi.Truncate(s, width, "")
 	}
-	return Pad(s, width)
+	return s
 }
 
 func minInt(a, b int) int {

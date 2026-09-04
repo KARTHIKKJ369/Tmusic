@@ -61,6 +61,23 @@ func (idx *Index) set(tracks []audio.Track) {
 	}
 }
 
+// AddTrack reads metadata for a newly added audio file and appends it to the index.
+func (idx *Index) AddTrack(path string) error {
+	t := audio.ReadMetadata(path)
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	for i, existing := range idx.tracks {
+		if existing.Path == t.Path {
+			idx.tracks[i] = t
+			idx.byID[t.ID] = &idx.tracks[i]
+			return nil
+		}
+	}
+	idx.tracks = append(idx.tracks, t)
+	idx.byID[t.ID] = &idx.tracks[len(idx.tracks)-1]
+	return nil
+}
+
 // Load attempts to restore the index from the cache file.
 func (idx *Index) Load() error {
 	var tracks []audio.Track
