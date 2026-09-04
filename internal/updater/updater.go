@@ -1,4 +1,4 @@
-// Package updater handles automatic self-updates from GitHub Releases.
+// Package updater handles automatic self-updates from GitHub Releases across macOS, Linux, and Windows.
 package updater
 
 import (
@@ -233,11 +233,22 @@ func determineTargetPaths() []string {
 		}
 	}
 
-	home := os.Getenv("HOME")
-	if home != "" {
-		paths = append(paths, filepath.Join(home, ".local", "bin", "muse"))
+	if runtime.GOOS == "windows" {
+		localApp := os.Getenv("LOCALAPPDATA")
+		if localApp != "" {
+			paths = append(paths, filepath.Join(localApp, "Programs", "muse", "muse.exe"))
+		}
+		userProfile := os.Getenv("USERPROFILE")
+		if userProfile != "" {
+			paths = append(paths, filepath.Join(userProfile, "bin", "muse.exe"))
+		}
+	} else {
+		home, _ := os.UserHomeDir()
+		if home != "" {
+			paths = append(paths, filepath.Join(home, ".local", "bin", "muse"))
+		}
+		paths = append(paths, "/usr/local/bin/muse")
 	}
-	paths = append(paths, "/usr/local/bin/muse")
 
 	return paths
 }
@@ -248,6 +259,15 @@ func installBinary(data []byte, targetPath string) error {
 		return err
 	}
 
+	// On Windows, if the file is currently executing, rename it to .old first
+	if runtime.GOOS == "windows" {
+		oldFile := targetPath + ".old"
+		_ = os.Remove(oldFile)
+		if _, err := os.Stat(targetPath); err == nil {
+			_ = os.Rename(targetPath, oldFile)
+		}
+	}
+
 	// Write to temporary file in the same directory, then atomic rename
 	tmpFile := targetPath + ".tmp"
 	if err := os.WriteFile(tmpFile, data, 0o755); err != nil {
@@ -256,7 +276,10 @@ func installBinary(data []byte, targetPath string) error {
 
 	if err := os.Rename(tmpFile, targetPath); err != nil {
 		_ = os.Remove(tmpFile)
-		return err
+		// Fallback to direct write if rename fails
+		if writeErr := os.WriteFile(targetPath, data, 0o755); writeErr != nil {
+			return err
+		}
 	}
 
 	return os.Chmod(targetPath, 0o755)
