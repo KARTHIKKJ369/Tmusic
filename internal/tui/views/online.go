@@ -179,21 +179,10 @@ func (v *OnlineView) View(width, height int) string {
 		return sb.String()
 	}
 
-	// 5. Empty Results or Initial Screen (Clean Left-Aligned Orientation)
+	// 5. Empty Results or Initial Screen
 	if len(v.Tracks) == 0 {
 		if v.HasSearched && v.LastQuery != "" && !v.InputMode {
 			sb.WriteString(styles.Muted.Render(fmt.Sprintf("  No tracks found matching \"%s\". Press [/] to try another search.\n\n", v.LastQuery)))
-		} else {
-			sb.WriteString(styles.Bold.Render("  Search & Stream Millions of Songs Keyless\n\n"))
-			sb.WriteString(styles.Subtext.Render("  • Discovery: YouTube Music & Apple iTunes Catalog\n"))
-			sb.WriteString(styles.Subtext.Render("  • Streaming: Direct high-bitrate Opus/AAC audio via yt-dlp\n"))
-			sb.WriteString(styles.Subtext.Render("  • Continuous Play: Auto-queues related songs & radio\n"))
-			sb.WriteString(styles.Subtext.Render("  • Offline Download: Press [d] on any song to save to your local library\n\n"))
-			if v.InputMode {
-				sb.WriteString(styles.Amber.Render("  Type any artist, song, or album name above and press [Enter].\n"))
-			} else {
-				sb.WriteString(styles.Muted.Render("  Press [/] to begin searching.\n"))
-			}
 		}
 		return sb.String()
 	}

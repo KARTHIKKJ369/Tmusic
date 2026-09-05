@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 )
 
 // CheckDependencies verifies whether yt-dlp and ffmpeg are available on the system.
@@ -48,7 +47,7 @@ func CacheDir() (string, error) {
 }
 
 // ResolveAndCache resolves a track via yt-dlp, saves it to the local cache,
-// and concurrently downloads the album artwork.
+// and concurrently downloads the album artwork in the background.
 func ResolveAndCache(ctx context.Context, track OnlineTrack, onStatus func(string)) (string, []byte, error) {
 	cacheDir, err := CacheDir()
 	if err != nil {
@@ -70,39 +69,30 @@ func ResolveAndCache(ctx context.Context, track OnlineTrack, onStatus func(strin
 	cacheFile := filepath.Join(cacheDir, fmt.Sprintf("%s_%s.mp3", cacheKey, safeName))
 	artCacheFile := filepath.Join(cacheDir, fmt.Sprintf("%s_%s.jpg", cacheKey, safeName))
 
-	var (
-		artData []byte
-		wg      sync.WaitGroup
-	)
-
-	// Concurrently fetch artwork
-	wg.Add(1)
+	// Non-blocking artwork fetch in background
 	go func() {
-		defer wg.Done()
-		if data, err := os.ReadFile(artCacheFile); err == nil && len(data) > 0 {
-			artData = data
+		if _, err := os.Stat(artCacheFile); err == nil {
 			return
 		}
 		if track.ArtworkURL != "" {
 			if data, err := FetchArtwork(track.ArtworkURL); err == nil && len(data) > 0 {
-				artData = data
 				_ = os.WriteFile(artCacheFile, data, 0o644)
 			}
 		}
 	}()
+
+	artData, _ := os.ReadFile(artCacheFile)
 
 	// If audio is already in cache and valid, return immediately (0ms playback)
 	if fi, err := os.Stat(cacheFile); err == nil && fi.Size() > 50000 {
 		if onStatus != nil {
 			onStatus("Loaded from local cache")
 		}
-		wg.Wait()
 		return cacheFile, artData, nil
 	}
 
-	// Check yt-dlp dependency
+	// Check dependencies
 	if err := CheckDependencies(); err != nil {
-		wg.Wait()
 		return "", artData, err
 	}
 
@@ -110,12 +100,43 @@ func ResolveAndCache(ctx context.Context, track OnlineTrack, onStatus func(strin
 		onStatus("Buffering audio stream...")
 	}
 
-	// Fast extraction: If track is from YouTube with a valid video ID, pass the direct URL!
+	// Fast path: If track has a direct YouTube video ID, extract stream URL and pipe directly through ffmpeg
+	if track.Source == "youtube" && len(track.ID) >= 8 && !strings.HasPrefix(track.ID, "itunes_") {
+		videoURL := fmt.Sprintf("https://www.youtube.com/watch?v=%s", track.ID)
+		if _, ffErr := exec.LookPath("ffmpeg"); ffErr == nil {
+			cmdURL := exec.CommandContext(ctx, "yt-dlp",
+				"--extractor-args", "youtube:player_client=android",
+				"-f", "18/ba/b",
+				"-g",
+				videoURL,
+			)
+			outURL, err := cmdURL.Output()
+			if err == nil {
+				streamURL := strings.TrimSpace(strings.Split(string(outURL), "\n")[0])
+				if streamURL != "" && strings.HasPrefix(streamURL, "http") {
+					cmdFF := exec.CommandContext(ctx, "ffmpeg",
+						"-y",
+						"-i", streamURL,
+						"-vn",
+						"-c:a", "libmp3lame",
+						"-q:a", "5",
+						cacheFile,
+					)
+					if err := cmdFF.Run(); err == nil {
+						if fi, err := os.Stat(cacheFile); err == nil && fi.Size() > 50000 {
+							return cacheFile, artData, nil
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback path: full yt-dlp extraction
 	tempTarget := filepath.Join(cacheDir, fmt.Sprintf("tmp_%s.%%(ext)s", cacheKey))
 	var args []string
 
 	if track.Source == "youtube" && len(track.ID) >= 8 && !strings.HasPrefix(track.ID, "itunes_") {
-		// Direct YouTube video ID: skips entire search phase for ultra-fast startup!
 		videoURL := fmt.Sprintf("https://www.youtube.com/watch?v=%s", track.ID)
 		args = []string{
 			"--extractor-args", "youtube:player_client=android",
@@ -128,7 +149,6 @@ func ResolveAndCache(ctx context.Context, track OnlineTrack, onStatus func(strin
 			videoURL,
 		}
 	} else {
-		// Fallback query
 		query := fmt.Sprintf("%s %s Official Audio", track.Artist, track.Title)
 		args = []string{
 			"--extractor-args", "youtube:player_client=android",
@@ -146,7 +166,6 @@ func ResolveAndCache(ctx context.Context, track OnlineTrack, onStatus func(strin
 	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// Retry without "Official Audio" if it was a search
 		if track.Source != "youtube" {
 			fallbackQuery := fmt.Sprintf("%s %s", track.Artist, track.Title)
 			args[len(args)-1] = fallbackQuery
@@ -154,7 +173,6 @@ func ResolveAndCache(ctx context.Context, track OnlineTrack, onStatus func(strin
 			output, err = cmdRetry.CombinedOutput()
 		}
 		if err != nil {
-			wg.Wait()
 			return "", artData, fmt.Errorf("audio resolution failed: %w (%s)", err, strings.TrimSpace(string(output)))
 		}
 	}
@@ -163,22 +181,18 @@ func ResolveAndCache(ctx context.Context, track OnlineTrack, onStatus func(strin
 	expectedTempMp3 := filepath.Join(cacheDir, fmt.Sprintf("tmp_%s.mp3", cacheKey))
 	if _, err := os.Stat(expectedTempMp3); err == nil {
 		if err := os.Rename(expectedTempMp3, cacheFile); err == nil {
-			wg.Wait()
 			return cacheFile, artData, nil
 		}
 	}
 
-	// Fallback scan of cache dir for matching file
 	files, _ := filepath.Glob(filepath.Join(cacheDir, fmt.Sprintf("tmp_%s.*", cacheKey)))
 	for _, f := range files {
 		if strings.HasSuffix(f, ".mp3") {
 			_ = os.Rename(f, cacheFile)
-			wg.Wait()
 			return cacheFile, artData, nil
 		}
 	}
 
-	wg.Wait()
 	if _, err := os.Stat(cacheFile); err == nil {
 		return cacheFile, artData, nil
 	}
