@@ -175,12 +175,40 @@ func CleanYouTubeMetadata(rawTitle, uploader string) (string, string) {
 }
 
 // FetchRelatedTracks searches for songs related to the current track for continuous playback.
+// It queries artist radio / playlist and filters out duplicate versions or covers of the current song.
 func FetchRelatedTracks(ctx context.Context, track OnlineTrack, limit int) ([]OnlineTrack, error) {
 	if limit <= 0 {
 		limit = 10
 	}
-	query := fmt.Sprintf("%s %s similar songs", track.Artist, track.Title)
-	return SearchYouTube(ctx, query, limit)
+	var query string
+	if track.Artist != "" && track.Artist != "YouTube Music" {
+		query = fmt.Sprintf("%s songs playlist", track.Artist)
+	} else {
+		query = fmt.Sprintf("%s similar songs playlist", track.Title)
+	}
+
+	results, err := SearchYouTube(ctx, query, limit+6)
+	if err != nil {
+		return nil, err
+	}
+
+	normCurrent := strings.ToLower(strings.TrimSpace(track.Title))
+	var filtered []OnlineTrack
+	for _, t := range results {
+		normTitle := strings.ToLower(strings.TrimSpace(t.Title))
+		// Filter out identical track ID or songs whose title contains the current track's title (e.g. covers, karaoke, remixes)
+		if t.ID == track.ID {
+			continue
+		}
+		if normCurrent != "" && (strings.Contains(normTitle, normCurrent) || (len(normCurrent) > 5 && strings.Contains(normCurrent, normTitle))) {
+			continue
+		}
+		filtered = append(filtered, t)
+		if len(filtered) >= limit {
+			break
+		}
+	}
+	return filtered, nil
 }
 
 // SearchOnline queries YouTube first for comprehensive music discovery, with iTunes fallback.

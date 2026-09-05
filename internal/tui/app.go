@@ -183,6 +183,11 @@ type onlineRelatedMsg struct {
 	tracks []online.OnlineTrack
 }
 
+type onlineArtworkMsg struct {
+	trackID string
+	data    []byte
+}
+
 type onlineDownloadMsg struct {
 	trackTitle string
 	path       string
@@ -222,6 +227,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case onlineArtworkMsg:
+		if m.currentTrack != nil && strings.HasSuffix(m.currentTrack.ID, msg.trackID) {
+			m.currentCover = msg.data
+			m.npView.CoverData = msg.data
+		}
+		return m, nil
+
 	case onlineRelatedMsg:
 		added := 0
 		for _, rt := range msg.tracks {
@@ -248,7 +260,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if added > 0 {
-			m.status = fmt.Sprintf("Queued %d related songs for continuous play", added)
+			m.status = fmt.Sprintf("Queued %d radio tracks for continuous play", added)
+			return m, m.prebufferNextTrack()
 		}
 		return m, nil
 
@@ -283,33 +296,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentCover = msg.artwork
 		m.npView.CoverData = msg.artwork
 
-		// Form a continuous playback queue starting with this track, followed by remaining search results
-		var onlineTracks []audio.Track
-		onlineTracks = append(onlineTracks, newTrack)
-		for _, ot := range m.onlineView.Tracks {
-			if ot.ID != msg.track.ID {
-				onlineTracks = append(onlineTracks, audio.Track{
-					ID:       fmt.Sprintf("online_%s", ot.ID),
-					Path:     "", // dynamically resolved on advance
-					Title:    ot.Title,
-					Artist:   ot.Artist,
-					Album:    ot.Album,
-					Duration: ot.Duration,
-					Year:     ot.Year,
-					Genre:    ot.Genre,
-				})
-			}
-		}
-
-		m.queue = playlist.NewQueue(onlineTracks)
+		// Queue ONLY the selected track (do not dump search results into queue)
+		m.queue = playlist.NewQueue([]audio.Track{newTrack})
 		m.queue.JumpTo(newTrack.ID)
-		m.activeTab = TabNowPlaying
+		// Stay on current tab so user can browse search results and continue searching
 		m.status = fmt.Sprintf("PLAYING: %s - %s (Online)", newTrack.Artist, newTrack.Title)
 
 		return m, tea.Batch(
 			m.playTrack(newTrack),
 			m.fetchRelatedOnlineTracks(msg.track),
-			m.prebufferNextTrack(),
+			m.fetchOnlineArtwork(msg.track),
 		)
 
 	case tea.WindowSizeMsg:
@@ -401,8 +397,27 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	key := msg.String()
 
-	// Direct percentage jumps in Now Playing tab (0..9)
-	if m.activeTab == TabNowPlaying && len(key) == 1 && key[0] >= '0' && key[0] <= '9' && m.currentTrack != nil {
+	// Direct tab navigation (1..5) - Always available anywhere, never intercepted
+	switch key {
+	case "1":
+		m.activeTab = TabLibrary
+		return m, nil
+	case "2":
+		m.activeTab = TabPlaylists
+		return m, nil
+	case "3":
+		m.activeTab = TabFavs
+		return m, nil
+	case "4":
+		m.activeTab = TabOnline
+		return m, nil
+	case "5":
+		m.activeTab = TabNowPlaying
+		return m, nil
+	}
+
+	// Percentage jumps in Now Playing tab (6..9, 0)
+	if m.activeTab == TabNowPlaying && len(key) == 1 && (key[0] == '0' || (key[0] >= '6' && key[0] <= '9')) && m.currentTrack != nil {
 		pct := float64(key[0]-'0') * 0.10
 		_ = m.player.SeekPercent(pct)
 		targetDur := time.Duration(float64(m.currentTrack.Duration) * pct)
@@ -419,18 +434,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		_ = m.pm.Save()
 		_ = config.Save(m.cfg)
 		return m, tea.Quit
-
-	// Direct tab navigation
-	case "1":
-		m.activeTab = TabLibrary
-	case "2":
-		m.activeTab = TabPlaylists
-	case "3":
-		m.activeTab = TabFavs
-	case "4":
-		m.activeTab = TabOnline
-	case "5":
-		m.activeTab = TabNowPlaying
 
 	// Tab cycling
 	case "tab", "]":
@@ -461,7 +464,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Search
 	case "/":
-		if m.activeTab == TabOnline {
+		if m.activeTab == TabOnline || (m.currentTrack != nil && strings.HasPrefix(m.currentTrack.ID, "online_")) {
+			m.activeTab = TabOnline
 			m.onlineView.InputMode = true
 			return m, nil
 		}
@@ -1133,6 +1137,19 @@ func (m *Model) fetchRelatedOnlineTracks(track online.OnlineTrack) tea.Cmd {
 			return nil
 		}
 		return onlineRelatedMsg{tracks: related}
+	}
+}
+
+func (m *Model) fetchOnlineArtwork(track online.OnlineTrack) tea.Cmd {
+	if track.ArtworkURL == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		data, err := online.FetchArtwork(track.ArtworkURL)
+		if err != nil || len(data) == 0 {
+			return nil
+		}
+		return onlineArtworkMsg{trackID: track.ID, data: data}
 	}
 }
 
