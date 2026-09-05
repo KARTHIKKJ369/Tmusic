@@ -558,6 +558,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.onlineView.Cursor = idx
 				return m, m.streamOnlineTrack(m.onlineView.Tracks[idx])
 			}
+			m.status = "Search online tracks first, or press [1] for Library"
 			return m, nil
 		}
 		if m.currentTrack == nil {
@@ -566,7 +567,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.queue.Shuffle() // Starts from a uniformly random track at pos 0
 			if t, ok := m.queue.Current(); ok {
 				m.cfg.Shuffle = true
-				m.activeTab = TabNowPlaying
 				m.status = "SHUFFLE: Started random playback"
 				return m, m.playTrack(t)
 			}
@@ -583,13 +583,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.npView.Shuffle = m.cfg.Shuffle
 		}
 
-	// Force pick new random track from library & jump to Now Playing (S or z)
+	// Force pick new random track from library or online
 	case "S", "z":
+		if m.activeTab == TabOnline {
+			if len(m.onlineView.Tracks) > 0 {
+				idx := rand.Intn(len(m.onlineView.Tracks))
+				m.onlineView.Cursor = idx
+				return m, m.streamOnlineTrack(m.onlineView.Tracks[idx])
+			}
+			m.status = "Search online tracks first, or press [1] for Library"
+			return m, nil
+		}
 		m.queue = playlist.NewQueue(m.index.All())
 		m.queue.Shuffle() // Fresh random starting track
 		if t, ok := m.queue.Current(); ok {
 			m.cfg.Shuffle = true
-			m.activeTab = TabNowPlaying
 			m.status = "SHUFFLE: Started random playback"
 			return m, m.playTrack(t)
 		}
@@ -644,7 +652,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.plView.InputValue = ""
 		}
 
-	// Delete in Playlists tab / Download in Online tab
+	// Delete in Playlists tab / Download in Online tab or Now Playing
 	case "x", "d", "D":
 		if m.activeTab == TabPlaylists && (key == "x" || key == "d") {
 			m.handlePlaylistDelete()
@@ -652,6 +660,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if ot := m.onlineView.Selected(); ot != nil {
 				return m, m.downloadOnlineTrack(*ot)
 			}
+		} else if (key == "d" || key == "D") && m.currentTrack != nil && strings.HasPrefix(m.currentTrack.ID, "online_") {
+			rawID := strings.TrimPrefix(m.currentTrack.ID, "online_")
+			ot := online.OnlineTrack{
+				ID:       rawID,
+				Title:    m.currentTrack.Title,
+				Artist:   m.currentTrack.Artist,
+				Album:    m.currentTrack.Album,
+				Duration: m.currentTrack.Duration,
+				Source:   "youtube",
+			}
+			return m, m.downloadOnlineTrack(ot)
 		}
 
 	// Navigation
@@ -1511,12 +1530,26 @@ func (m *Model) renderHelpBar() string {
 		}
 		return styles.HelpBar.Width(m.width).MaxHeight(1).Render(hints)
 	}
+
+	isOnlineTrack := m.currentTrack != nil && strings.HasPrefix(m.currentTrack.ID, "online_")
 	if m.width >= 90 {
-		hints = "[1-5/Tab]view  [s]huffle/play  [0-9/g]jump  [Space]play  [n/p]track  [←→]seek  [o]pen cover  [+/-]vol  [/]search  [?]help  [q]uit"
+		if isOnlineTrack {
+			hints = "[1-5/Tab]view  [Space]play  [d]ownload  [s]huffle  [0-9/g]jump  [n/p]track  [←→]seek  [o]pen cover  [+/-]vol  [/]search  [?]help  [q]uit"
+		} else {
+			hints = "[1-5/Tab]view  [s]huffle/play  [0-9/g]jump  [Space]play  [n/p]track  [←→]seek  [o]pen cover  [+/-]vol  [/]search  [?]help  [q]uit"
+		}
 	} else if m.width >= 65 {
-		hints = "[1-5]views  [s]huffle  [Space]play  [n/p]track  [←→]seek  [o]pen cover  [?]help  [q]uit"
+		if isOnlineTrack {
+			hints = "[1-5]views  [Space]play  [d]ownload  [s]huffle  [n/p]track  [←→]seek  [o]pen cover  [?]help  [q]uit"
+		} else {
+			hints = "[1-5]views  [s]huffle  [Space]play  [n/p]track  [←→]seek  [o]pen cover  [?]help  [q]uit"
+		}
 	} else {
-		hints = "[s]Shuffle  [Space]Play  [n/p]Track  [o]Cover  [?]Help  [q]Quit"
+		if isOnlineTrack {
+			hints = "[d]ownload  [Space]Play  [n/p]Track  [o]Cover  [?]Help  [q]Quit"
+		} else {
+			hints = "[s]Shuffle  [Space]Play  [n/p]Track  [o]Cover  [?]Help  [q]Quit"
+		}
 	}
 	return styles.HelpBar.Width(m.width).MaxHeight(1).Render(hints)
 }
@@ -1548,20 +1581,26 @@ func (m *Model) renderPlaylistPicker() string {
 	sb.WriteString(styles.Bold.Render(fmt.Sprintf("Add '%s' to Playlist:", views.Trunc(m.playlistPickTrack.DisplayTitle(), 30))))
 	sb.WriteString("\n\n")
 
-	for i, pl := range m.pm.Playlists {
-		prefix := "  "
-		if i == m.playlistPickCursor {
-			prefix = styles.Accent.Render("▶ ")
-		}
-		line := fmt.Sprintf("%s%s (%d tracks)", prefix, pl.Name, len(pl.TrackIDs))
-		if i == m.playlistPickCursor {
-			sb.WriteString(styles.ListItemSelected.Render(line) + "\n")
-		} else {
-			sb.WriteString(styles.ListItem.Render(line) + "\n")
-		}
+	playlists := m.pm.Playlists
+	if len(playlists) == 0 {
+		sb.WriteString(styles.Muted.Render("No playlists created yet.\nPress [c] in Playlists view to create one.\n\n"))
+		sb.WriteString(styles.Muted.Render("[Esc] Cancel"))
+		modal := styles.Modal.Render(sb.String())
+		return views.Center(modal, m.width)
 	}
 
-	sb.WriteString("\n" + styles.Muted.Render("[↑↓]select  [Enter]add  [Esc]cancel"))
+	for i, pl := range playlists {
+		var line string
+		if i == m.playlistPickCursor {
+			line = styles.ListItemSelected.Render(fmt.Sprintf(" ▸ %-24s (%d tracks)", views.Trunc(pl.Name, 22), len(pl.TrackIDs)))
+		} else {
+			line = styles.ListItem.Render(fmt.Sprintf("   %-24s (%d tracks)", views.Trunc(pl.Name, 22), len(pl.TrackIDs)))
+		}
+		sb.WriteString(line + "\n")
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(styles.Muted.Render("[Enter] Add to Playlist  [Esc] Cancel"))
 	modal := styles.Modal.Render(sb.String())
 	return views.Center(modal, m.width)
 }
@@ -1594,14 +1633,15 @@ func (m *Model) renderHelp() string {
 			{
 				title: "PLAYBACK & CONTROLS",
 				items: []shortcut{
-					{"s", "Shuffle & play random (moves to Now Playing)"},
-					{"S / z", "Force pick new random track from library"},
+					{"s", "Shuffle & toggle queue shuffle (online: random pick)"},
+					{"S / z", "Force pick new random track"},
 					{"Space", "Play / Pause"},
 					{"Enter", "Play selected track or playlist"},
 					{"n / p", "Next / Previous track in queue"},
 					{"→ / ←", "Seek ±5s (Shift+→ / Shift+← for ±30s)"},
 					{"0 - 9", "Jump to 0% - 90% position in track"},
 					{"g or :", "Jump to exact time (e.g. 1:30, 90s, 50%)"},
+					{"d", "Download playing online track to local library"},
 					{"o", "Open full album cover in photo viewer"},
 					{"+ / -", "Volume up / down (5% steps)"},
 					{"m", "Mute / Unmute"},
@@ -1614,7 +1654,7 @@ func (m *Model) renderHelp() string {
 					{"f", "Toggle favourite heart (♥)"},
 					{"a", "Add selected track to playlist"},
 					{"c", "Create new playlist"},
-					{"d / x", "Delete playlist or remove track"},
+					{"d / x", "Download online track / Delete in playlists"},
 					{"/", "Fuzzy search (local library or online)"},
 					{"?", "Close this help cheatsheet"},
 					{"q / Ctrl+C", "Quit and save player state"},
