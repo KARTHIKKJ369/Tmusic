@@ -96,6 +96,12 @@ func ResolveAndCache(ctx context.Context, track OnlineTrack, onStatus func(strin
 		return "", artData, err
 	}
 
+	// Clean up any stale temporary files for this track from prior interrupted attempts
+	staleFiles, _ := filepath.Glob(filepath.Join(cacheDir, fmt.Sprintf("tmp_%s.*", cacheKey)))
+	for _, f := range staleFiles {
+		_ = os.Remove(f)
+	}
+
 	if onStatus != nil {
 		onStatus("Buffering audio stream...")
 	}
@@ -164,16 +170,16 @@ func ResolveAndCache(ctx context.Context, track OnlineTrack, onStatus func(strin
 	}
 
 	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
-	output, err := cmd.CombinedOutput()
+	_, err = cmd.CombinedOutput()
 	if err != nil {
 		if track.Source != "youtube" {
 			fallbackQuery := fmt.Sprintf("%s %s", track.Artist, track.Title)
 			args[len(args)-1] = fallbackQuery
 			cmdRetry := exec.CommandContext(ctx, "yt-dlp", args...)
-			output, err = cmdRetry.CombinedOutput()
+			_, err = cmdRetry.CombinedOutput()
 		}
 		if err != nil {
-			return "", artData, fmt.Errorf("audio resolution failed: %w (%s)", err, strings.TrimSpace(string(output)))
+			return "", artData, fmt.Errorf("unable to stream \"%s - %s\". Please choose another track.", track.Artist, track.Title)
 		}
 	}
 

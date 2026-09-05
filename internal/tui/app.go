@@ -467,6 +467,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.activeTab == TabOnline || (m.currentTrack != nil && strings.HasPrefix(m.currentTrack.ID, "online_")) {
 			m.activeTab = TabOnline
 			m.onlineView.InputMode = true
+			m.onlineView.ErrorMsg = ""
 			return m, nil
 		}
 		m.showSearch = true
@@ -669,6 +670,15 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleTimeJumpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if isDeleteWord(msg) {
+		m.timeJumpInput = views.DeleteWord(m.timeJumpInput)
+		return m, nil
+	}
+	if isClearLine(msg) {
+		m.timeJumpInput = ""
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "esc", "ctrl+c":
 		m.showTimeJumpModal = false
@@ -797,6 +807,17 @@ func (m *Model) handlePlaylistDelete() {
 }
 
 func (m *Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if isDeleteWord(msg) {
+		m.srchView.Query = views.DeleteWord(m.srchView.Query)
+		m.srchView.Filter(m.index.All())
+		return m, nil
+	}
+	if isClearLine(msg) {
+		m.srchView.Query = ""
+		m.srchView.Filter(m.index.All())
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "esc", "ctrl+c":
 		m.showSearch = false
@@ -826,6 +847,15 @@ func (m *Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handlePlaylistInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if isDeleteWord(msg) {
+		m.plView.InputValue = views.DeleteWord(m.plView.InputValue)
+		return m, nil
+	}
+	if isClearLine(msg) {
+		m.plView.InputValue = ""
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "esc":
 		m.plView.InputMode = false
@@ -968,7 +998,47 @@ func (m *Model) toggleFavSelected() {
 	_ = m.pm.Save()
 }
 
+func isDeleteWord(msg tea.KeyMsg) bool {
+	if msg.Type == tea.KeyCtrlW {
+		return true
+	}
+	if msg.Alt && (msg.Type == tea.KeyBackspace || msg.Type == tea.KeyDelete || msg.Type == tea.KeyCtrlH) {
+		return true
+	}
+	switch msg.String() {
+	case "ctrl+w", "alt+backspace", "esc+backspace", "ctrl+backspace", "meta+backspace", "alt+delete":
+		return true
+	}
+	return false
+}
+
+func isClearLine(msg tea.KeyMsg) bool {
+	if msg.Type == tea.KeyCtrlU {
+		return true
+	}
+	switch msg.String() {
+	case "ctrl+u", "ctrl+k":
+		return true
+	}
+	return false
+}
+
 func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Any input interaction immediately clears transient error messages
+	m.onlineView.ErrorMsg = ""
+
+	if isDeleteWord(msg) {
+		m.onlineView.Query = views.DeleteWord(m.onlineView.Query)
+		return m, m.fetchOnlineSuggestions(m.onlineView.Query)
+	}
+
+	if isClearLine(msg) {
+		m.onlineView.Query = ""
+		m.onlineView.Suggestions = nil
+		m.onlineView.SuggestionCursor = -1
+		return m, nil
+	}
+
 	switch msg.Type {
 	case tea.KeyEsc:
 		m.onlineView.InputMode = false
@@ -1029,6 +1099,14 @@ func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	default:
 		switch msg.String() {
+		case "ctrl+w", "alt+backspace", "esc+backspace":
+			m.onlineView.Query = views.DeleteWord(m.onlineView.Query)
+			return m, m.fetchOnlineSuggestions(m.onlineView.Query)
+		case "ctrl+u":
+			m.onlineView.Query = ""
+			m.onlineView.Suggestions = nil
+			m.onlineView.SuggestionCursor = -1
+			return m, nil
 		case "up":
 			if len(m.onlineView.Suggestions) > 0 {
 				m.onlineView.SuggestionUp()

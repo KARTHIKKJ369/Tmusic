@@ -25,3 +25,32 @@ func TestPadANSI(t *testing.T) {
 		t.Errorf("expected visual width 20, got %d", VisibleLen(padded))
 	}
 }
+
+func TestDeleteWord(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", ""},
+		{"   ", ""},
+		{"hello", ""},
+		{"hello ", ""},
+		{"hello world", "hello "},
+		{"hello world   ", "hello "},
+		{"one two three", "one two "},
+		{"linkin park - numb", "linkin park - "},
+		{"linkin park - ", "linkin park "},
+		{"linkin park ", "linkin "},
+		{"linkin ", ""},
+		{"hello-world", "hello-"},
+		{"hello-", "hello"},
+		{"café au lait", "café au "},
+	}
+
+	for _, tt := range tests {
+		got := DeleteWord(tt.input)
+		if got != tt.expected {
+			t.Errorf("DeleteWord(%q) = %q; want %q", tt.input, got, tt.expected)
+		}
+	}
+}
