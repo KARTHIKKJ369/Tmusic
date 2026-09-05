@@ -76,20 +76,27 @@ func SearchITunes(query string, limit int) ([]ITunesTrack, error) {
 	if limit <= 0 {
 		limit = 25
 	}
+
+	cacheKey := fmt.Sprintf("itunes:%d:%s", limit, query)
+	if val, ok := DefaultCache().Get(cacheKey); ok {
+		if tracks, ok := val.([]ITunesTrack); ok {
+			return tracks, nil
+		}
+	}
+
 	endpoint := fmt.Sprintf(
 		"https://itunes.apple.com/search?term=%s&entity=song&limit=%d",
 		url.QueryEscape(query),
 		limit,
 	)
 
-	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "muse/0.1.0")
 
-	resp, err := client.Do(req)
+	resp, err := HTTPClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("itunes search request: %w", err)
 	}
@@ -104,6 +111,7 @@ func SearchITunes(query string, limit int) ([]ITunesTrack, error) {
 		return nil, fmt.Errorf("decode itunes response: %w", err)
 	}
 
+	DefaultCache().Set(cacheKey, data.Results, 1*time.Hour)
 	return data.Results, nil
 }
 
@@ -113,8 +121,11 @@ func FetchArtwork(artworkURL string) ([]byte, error) {
 		return nil, nil
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(artworkURL)
+	if data, ok := DefaultCache().GetArtwork(artworkURL); ok {
+		return data, nil
+	}
+
+	resp, err := HTTPClient().Get(artworkURL)
 	if err != nil {
 		return nil, err
 	}
@@ -124,5 +135,11 @@ func FetchArtwork(artworkURL string) ([]byte, error) {
 		return nil, fmt.Errorf("fetch artwork HTTP %d", resp.StatusCode)
 	}
 
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	DefaultCache().SetArtwork(artworkURL, data)
+	return data, nil
 }

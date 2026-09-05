@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -35,9 +34,12 @@ func FetchSuggestions(query string) ([]string, error) {
 		return nil, nil
 	}
 
+	if sugs, ok := DefaultCache().GetSuggestions(query); ok {
+		return sugs, nil
+	}
+
 	endpoint := fmt.Sprintf("https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&q=%s", url.QueryEscape(query))
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(endpoint)
+	resp, err := HTTPClient().Get(endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -65,6 +67,7 @@ func FetchSuggestions(query string) ([]string, error) {
 	if len(suggestions) > 8 {
 		suggestions = suggestions[:8]
 	}
+	DefaultCache().SetSuggestions(query, suggestions)
 	return suggestions, nil
 }
 
@@ -72,6 +75,11 @@ func FetchSuggestions(query string) ([]string, error) {
 func SearchYouTube(ctx context.Context, query string, limit int) ([]OnlineTrack, error) {
 	if limit <= 0 {
 		limit = 15
+	}
+
+	cacheKey := fmt.Sprintf("yt:%d:%s", limit, query)
+	if tracks, ok := DefaultCache().GetSearch(cacheKey); ok {
+		return tracks, nil
 	}
 
 	// Use yt-dlp with --flat-playlist for sub-second search
@@ -88,7 +96,9 @@ func SearchYouTube(ctx context.Context, query string, limit int) ([]OnlineTrack,
 		return nil, fmt.Errorf("youtube search: %w", err)
 	}
 
-	return parseYouTubeTracks(string(out)), nil
+	tracks := parseYouTubeTracks(string(out))
+	DefaultCache().SetSearch(cacheKey, tracks)
+	return tracks, nil
 }
 
 func parseYouTubeTracks(out string) []OnlineTrack {
@@ -187,6 +197,11 @@ func FetchRelatedTracks(ctx context.Context, track OnlineTrack, limit int) ([]On
 		limit = 10
 	}
 
+	radioKey := fmt.Sprintf("%s:%d", track.ID, limit)
+	if tracks, ok := DefaultCache().GetRadio(radioKey); ok {
+		return tracks, nil
+	}
+
 	var rawTracks []OnlineTrack
 
 	// 1. Primary & Best Approach: Official YouTube Automix Radio (list=RD<id>)
@@ -236,6 +251,7 @@ func FetchRelatedTracks(ctx context.Context, track OnlineTrack, limit int) ([]On
 			break
 		}
 	}
+	DefaultCache().SetRadio(radioKey, filtered)
 	return filtered, nil
 }
 
@@ -245,9 +261,15 @@ func SearchOnline(ctx context.Context, query string, limit int) ([]OnlineTrack, 
 		limit = 15
 	}
 
+	cacheKey := fmt.Sprintf("online:%d:%s", limit, query)
+	if tracks, ok := DefaultCache().GetSearch(cacheKey); ok {
+		return tracks, nil
+	}
+
 	// 1. YouTube Search (100% catalog coverage across all languages and genres)
 	ytTracks, err := SearchYouTube(ctx, query, limit)
 	if err == nil && len(ytTracks) > 0 {
+		DefaultCache().SetSearch(cacheKey, ytTracks)
 		return ytTracks, nil
 	}
 
@@ -258,6 +280,7 @@ func SearchOnline(ctx context.Context, query string, limit int) ([]OnlineTrack, 
 		for _, t := range itunesTracks {
 			results = append(results, t.ToOnlineTrack())
 		}
+		DefaultCache().SetSearch(cacheKey, results)
 		return results, nil
 	}
 

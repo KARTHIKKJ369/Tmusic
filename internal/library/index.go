@@ -4,6 +4,8 @@ package library
 import (
 	"io/fs"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/KARTHIKKJ369/Tmusic/internal/audio"
@@ -151,4 +153,55 @@ func (idx *Index) Scan(dir string, progress func(done, total int)) error {
 	wg.Wait()
 	idx.set(tracks)
 	return nil
+}
+
+// TasteProfile computes the user's top artists and genres from their indexed music.
+func (idx *Index) TasteProfile() TasteProfile {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	artistCounts := make(map[string]int)
+	genreCounts := make(map[string]int)
+
+	for _, t := range idx.tracks {
+		artist := strings.TrimSpace(t.Artist)
+		if artist != "" && artist != "Unknown Artist" && artist != "Unknown" {
+			artistCounts[artist]++
+		}
+		genre := strings.TrimSpace(t.Genre)
+		if genre != "" && genre != "Unknown Genre" && genre != "Unknown" {
+			genreCounts[genre]++
+		}
+	}
+
+	topArtists := topNKeys(artistCounts, 5)
+	topGenres := topNKeys(genreCounts, 3)
+
+	return TasteProfile{
+		TopArtists:  topArtists,
+		TopGenres:   topGenres,
+		TotalTracks: len(idx.tracks),
+	}
+}
+
+func topNKeys(m map[string]int, n int) []string {
+	type pair struct {
+		key   string
+		count int
+	}
+	pairs := make([]pair, 0, len(m))
+	for k, v := range m {
+		pairs = append(pairs, pair{k, v})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		return pairs[i].count > pairs[j].count
+	})
+	if len(pairs) > n {
+		pairs = pairs[:n]
+	}
+	result := make([]string, len(pairs))
+	for i, p := range pairs {
+		result[i] = p.key
+	}
+	return result
 }

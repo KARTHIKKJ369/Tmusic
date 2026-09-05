@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -43,26 +44,28 @@ type trackEndMsg struct{}
 
 // Model is the root bubbletea model.
 type Model struct {
-	cfg    config.Config
-	player *audio.Player
-	index  *library.Index
-	pm     *playlist.Manager
-	queue  *playlist.Queue
+	cfg        config.Config
+	player     *audio.Player
+	index      library.LocalRepository
+	onlineRepo online.OnlineRepository
+	pm         *playlist.Manager
+	queue      *playlist.Queue
 
 	// TUI state
-	activeTab  int
-	width      int
-	height     int
-	showHelp   bool
-	showSearch bool
-	status     string // transient status message
-	tickCount  int64  // counter for dynamic animations
-	prevVolume float64
+	activeTab     int
+	width         int
+	height        int
+	showHelp      bool
+	showSearch    bool
+	status        string // transient status message
+	tickCount     int64  // counter for dynamic animations
+	prevVolume    float64
+	suggestionSeq uint64
 
 	// Playlist picker modal
-	showPlaylistPicker  bool
-	playlistPickTrack   audio.Track
-	playlistPickCursor  int
+	showPlaylistPicker bool
+	playlistPickTrack  audio.Track
+	playlistPickCursor int
 
 	// Time jump modal (g or :)
 	showTimeJumpModal bool
@@ -85,15 +88,23 @@ type Model struct {
 	paused       bool
 }
 
-// New creates and initialises the Model.
-func New(cfg config.Config, idx *library.Index, pm *playlist.Manager, player *audio.Player) *Model {
+// New creates and initialises the Model with local and online repositories.
+func New(cfg config.Config, idx library.LocalRepository, pm *playlist.Manager, player *audio.Player, onlineRepo ...online.OnlineRepository) *Model {
 	tracks := idx.All()
 	q := playlist.NewQueue(tracks)
+
+	var oRepo online.OnlineRepository
+	if len(onlineRepo) > 0 && onlineRepo[0] != nil {
+		oRepo = onlineRepo[0]
+	} else {
+		oRepo = online.NewRepository()
+	}
 
 	m := &Model{
 		cfg:        cfg,
 		player:     player,
 		index:      idx,
+		onlineRepo: oRepo,
 		pm:         pm,
 		queue:      q,
 		prevVolume: cfg.Volume,
@@ -137,11 +148,13 @@ func (m *Model) SetOnlineMode(query string) {
 	}
 }
 
-// Init starts the event listener goroutine and executes initial online query if provided.
+// Init starts the event listener goroutine and executes initial online query or recommendation if provided.
 func (m *Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{listenForPlayerEvents(m.player)}
 	if m.initialOnlineQuery != "" {
 		cmds = append(cmds, m.searchOnline(m.initialOnlineQuery))
+	} else if m.activeTab == TabOnline {
+		cmds = append(cmds, m.fetchRecommendations())
 	}
 	return tea.Batch(cmds...)
 }
@@ -160,6 +173,16 @@ func listenForPlayerEvents(p *audio.Player) tea.Cmd {
 	}
 }
 
+type debounceSuggestionMsg struct {
+	seq   uint64
+	query string
+}
+
+type onlineRecommendMsg struct {
+	tracks []online.OnlineTrack
+	err    error
+}
+
 type onlineSearchMsg struct {
 	query  string
 	tracks []online.OnlineTrack
@@ -167,10 +190,9 @@ type onlineSearchMsg struct {
 }
 
 type onlineStreamMsg struct {
-	track    online.OnlineTrack
-	filePath string
-	artwork  []byte
-	err      error
+	track  online.OnlineTrack
+	result online.StreamResult
+	err    error
 }
 
 type onlineSuggestionsMsg struct {
@@ -198,9 +220,26 @@ type onlineDownloadMsg struct {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
+	case debounceSuggestionMsg:
+		if msg.seq == m.suggestionSeq && m.activeTab == TabOnline && m.onlineView.InputMode && strings.TrimSpace(m.onlineView.Query) == msg.query {
+			return m, m.fetchOnlineSuggestions(msg.query)
+		}
+		return m, nil
+
+	case onlineRecommendMsg:
+		if msg.err == nil && len(msg.tracks) > 0 && !m.onlineView.HasSearched && len(m.onlineView.Tracks) == 0 {
+			m.onlineView.Tracks = msg.tracks
+			m.onlineView.IsRecommended = true
+			m.onlineView.Cursor = 0
+			m.onlineView.ScrollOffset = 0
+			return m, tea.ClearScreen
+		}
+		return m, nil
+
 	case onlineSearchMsg:
 		m.onlineView.Loading = false
 		m.onlineView.HasSearched = true
+		m.onlineView.IsRecommended = false
 		m.onlineView.LastQuery = msg.query
 		if msg.err != nil {
 			m.onlineView.ErrorMsg = msg.err.Error()
@@ -218,7 +257,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = fmt.Sprintf("No online tracks found for '%s'", msg.query)
 			}
 		}
-		return m, nil
+		return m, tea.ClearScreen
 
 	case onlineSuggestionsMsg:
 		if m.activeTab == TabOnline && m.onlineView.InputMode && m.onlineView.Query == msg.query {
@@ -284,7 +323,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		newTrack := audio.Track{
 			ID:       fmt.Sprintf("online_%s", msg.track.ID),
-			Path:     msg.filePath,
+			Path:     msg.result.FilePath,
 			Title:    msg.track.Title,
 			Artist:   msg.track.Artist,
 			Album:    msg.track.Album,
@@ -293,8 +332,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Genre:    msg.track.Genre,
 		}
 		m.onlineView.PlayingTrackID = msg.track.ID
-		m.currentCover = msg.artwork
-		m.npView.CoverData = msg.artwork
+		if len(msg.result.Artwork) > 0 {
+			m.currentCover = msg.result.Artwork
+			m.npView.CoverData = msg.result.Artwork
+		}
 
 		// Queue ONLY the selected track (do not dump search results into queue)
 		m.queue = playlist.NewQueue([]audio.Track{newTrack})
@@ -302,8 +343,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Stay on current tab so user can browse search results and continue searching
 		m.status = fmt.Sprintf("PLAYING: %s - %s (Online)", newTrack.Artist, newTrack.Title)
 
+		var playCmd tea.Cmd
+		if msg.result.Stream != nil {
+			playCmd = m.playOnlineStream(newTrack, msg.result.Stream)
+		} else {
+			playCmd = m.playTrack(newTrack)
+		}
+
 		return m, tea.Batch(
-			m.playTrack(newTrack),
+			playCmd,
 			m.fetchRelatedOnlineTracks(msg.track),
 			m.fetchOnlineArtwork(msg.track),
 		)
@@ -312,7 +360,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.updateViewSizes()
-		return m, nil
+		return m, tea.ClearScreen
 
 	case tickMsg:
 		m.tickCount++
@@ -325,13 +373,26 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmd, listenForPlayerEvents(m.player))
 
 	case tea.MouseMsg:
-		if msg.Type == tea.MouseLeft && msg.Y == 0 {
-			// Click on tab header area
-			colWidth := m.width / 5
-			if colWidth > 0 {
-				tab := msg.X / colWidth
-				if tab >= 0 && tab <= 4 {
-					m.activeTab = tab
+		switch msg.Type {
+		case tea.MouseWheelUp:
+			m.moveUp()
+			return m, nil
+		case tea.MouseWheelDown:
+			m.moveDown()
+			return m, nil
+		case tea.MouseLeft:
+			if msg.Y == 0 {
+				// Click on tab header area
+				colWidth := m.width / 5
+				if colWidth > 0 {
+					tab := msg.X / colWidth
+					if tab >= 0 && tab <= 4 {
+						m.activeTab = tab
+						if m.activeTab == TabOnline && !m.onlineView.HasSearched && len(m.onlineView.Tracks) == 0 {
+							return m, tea.Batch(tea.ClearScreen, m.fetchRecommendations())
+						}
+						return m, tea.ClearScreen
+					}
 				}
 			}
 		}
@@ -401,19 +462,22 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key {
 	case "1":
 		m.activeTab = TabLibrary
-		return m, nil
+		return m, tea.ClearScreen
 	case "2":
 		m.activeTab = TabPlaylists
-		return m, nil
+		return m, tea.ClearScreen
 	case "3":
 		m.activeTab = TabFavs
-		return m, nil
+		return m, tea.ClearScreen
 	case "4":
 		m.activeTab = TabOnline
-		return m, nil
+		if !m.onlineView.HasSearched && len(m.onlineView.Tracks) == 0 {
+			return m, tea.Batch(tea.ClearScreen, m.fetchRecommendations())
+		}
+		return m, tea.ClearScreen
 	case "5":
 		m.activeTab = TabNowPlaying
-		return m, nil
+		return m, tea.ClearScreen
 	}
 
 	// Percentage jumps in Now Playing tab (6..9, 0)
@@ -439,19 +503,32 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab", "]":
 		if m.activeTab == TabPlaylists {
 			m.plView.TogglePane()
-		} else {
-			m.activeTab = (m.activeTab + 1) % 5
+			return m, nil
 		}
+		m.activeTab = (m.activeTab + 1) % 5
+		if m.activeTab == TabOnline && !m.onlineView.HasSearched && len(m.onlineView.Tracks) == 0 {
+			return m, tea.Batch(tea.ClearScreen, m.fetchRecommendations())
+		}
+		return m, tea.ClearScreen
 	case "shift+tab", "[":
 		if m.activeTab == TabPlaylists {
 			m.plView.TogglePane()
-		} else {
-			m.activeTab = (m.activeTab + 4) % 5
+			return m, nil
 		}
+		m.activeTab = (m.activeTab + 4) % 5
+		if m.activeTab == TabOnline && !m.onlineView.HasSearched && len(m.onlineView.Tracks) == 0 {
+			return m, tea.Batch(tea.ClearScreen, m.fetchRecommendations())
+		}
+		return m, tea.ClearScreen
 
 	// Help toggle
 	case "?":
 		m.showHelp = !m.showHelp
+		return m, tea.ClearScreen
+
+	// Repaint / clear screen
+	case "ctrl+l":
+		return m, tea.ClearScreen
 
 	// Time jump prompt (e.g. g or :)
 	case "g", ":":
@@ -468,13 +545,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.activeTab = TabOnline
 			m.onlineView.InputMode = true
 			m.onlineView.ErrorMsg = ""
-			return m, nil
+			return m, tea.ClearScreen
 		}
 		m.showSearch = true
 		m.srchView.Active = true
 		m.srchView.Query = ""
 		m.srchView.Filter(m.index.All())
-		return m, nil
+		return m, tea.ClearScreen
 
 	// Play/Pause
 	case " ":
@@ -841,6 +918,7 @@ func (m *Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "ctrl+c":
 		m.showSearch = false
 		m.srchView.Active = false
+		return m, tea.ClearScreen
 	case "enter":
 		if t, ok := m.srchView.Selected(); ok {
 			m.showSearch = false
@@ -923,7 +1001,7 @@ func (m *Model) moveDown() {
 	case TabFavs:
 		m.favView.MoveDown()
 	case TabOnline:
-		m.onlineView.MoveDown(maxInt(m.height-7, 4))
+		m.onlineView.MoveDown()
 	}
 }
 
@@ -1048,7 +1126,7 @@ func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if isDeleteWord(msg) {
 		m.onlineView.Query = views.DeleteWord(m.onlineView.Query)
-		return m, m.fetchOnlineSuggestions(m.onlineView.Query)
+		return m, m.debounceSuggestions()
 	}
 
 	if isClearLine(msg) {
@@ -1063,7 +1141,7 @@ func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.onlineView.InputMode = false
 		m.onlineView.Suggestions = nil
 		m.onlineView.SuggestionCursor = -1
-		return m, nil
+		return m, tea.ClearScreen
 
 	case tea.KeyUp:
 		if len(m.onlineView.Suggestions) > 0 {
@@ -1081,7 +1159,7 @@ func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if sug := m.onlineView.SelectedSuggestion(); sug != "" {
 			m.onlineView.Query = sug
 			m.onlineView.SuggestionCursor = -1
-			return m, m.fetchOnlineSuggestions(m.onlineView.Query)
+			return m, m.debounceSuggestions()
 		}
 		return m, nil
 
@@ -1094,15 +1172,15 @@ func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.onlineView.Query = target
 			m.onlineView.Suggestions = nil
 			m.onlineView.SuggestionCursor = -1
-			return m, m.searchOnline(target)
+			return m, tea.Batch(tea.ClearScreen, m.searchOnline(target))
 		}
 		m.onlineView.InputMode = false
-		return m, nil
+		return m, tea.ClearScreen
 
 	case tea.KeyBackspace:
 		if len(m.onlineView.Query) > 0 {
 			m.onlineView.Query = m.onlineView.Query[:len(m.onlineView.Query)-1]
-			return m, m.fetchOnlineSuggestions(m.onlineView.Query)
+			return m, m.debounceSuggestions()
 		}
 		m.onlineView.Suggestions = nil
 		m.onlineView.SuggestionCursor = -1
@@ -1110,17 +1188,17 @@ func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case tea.KeySpace:
 		m.onlineView.Query += " "
-		return m, m.fetchOnlineSuggestions(m.onlineView.Query)
+		return m, m.debounceSuggestions()
 
 	case tea.KeyRunes:
 		m.onlineView.Query += string(msg.Runes)
-		return m, m.fetchOnlineSuggestions(m.onlineView.Query)
+		return m, m.debounceSuggestions()
 
 	default:
 		switch msg.String() {
 		case "ctrl+w", "alt+backspace", "esc+backspace":
 			m.onlineView.Query = views.DeleteWord(m.onlineView.Query)
-			return m, m.fetchOnlineSuggestions(m.onlineView.Query)
+			return m, m.debounceSuggestions()
 		case "ctrl+u":
 			m.onlineView.Query = ""
 			m.onlineView.Suggestions = nil
@@ -1140,7 +1218,7 @@ func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if sug := m.onlineView.SelectedSuggestion(); sug != "" {
 				m.onlineView.Query = sug
 				m.onlineView.SuggestionCursor = -1
-				return m, m.fetchOnlineSuggestions(m.onlineView.Query)
+				return m, m.debounceSuggestions()
 			}
 		case "enter", "ctrl+m":
 			target := m.onlineView.SelectedSuggestion()
@@ -1163,7 +1241,7 @@ func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "backspace":
 			if len(m.onlineView.Query) > 0 {
 				m.onlineView.Query = m.onlineView.Query[:len(m.onlineView.Query)-1]
-				return m, m.fetchOnlineSuggestions(m.onlineView.Query)
+				return m, m.debounceSuggestions()
 			}
 			m.onlineView.Suggestions = nil
 			m.onlineView.SuggestionCursor = -1
@@ -1171,16 +1249,30 @@ func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		default:
 			if len(msg.Runes) > 0 {
 				m.onlineView.Query += string(msg.Runes)
-				return m, m.fetchOnlineSuggestions(m.onlineView.Query)
+				return m, m.debounceSuggestions()
 			}
 			s := msg.String()
 			if len(s) == 1 && s[0] >= 32 && s[0] < 127 {
 				m.onlineView.Query += s
-				return m, m.fetchOnlineSuggestions(m.onlineView.Query)
+				return m, m.debounceSuggestions()
 			}
 		}
 	}
 	return m, nil
+}
+
+func (m *Model) debounceSuggestions() tea.Cmd {
+	m.suggestionSeq++
+	seq := m.suggestionSeq
+	query := strings.TrimSpace(m.onlineView.Query)
+	if len(query) < 2 {
+		m.onlineView.Suggestions = nil
+		m.onlineView.SuggestionCursor = -1
+		return nil
+	}
+	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
+		return debounceSuggestionMsg{seq: seq, query: query}
+	})
 }
 
 func (m *Model) fetchOnlineSuggestions(query string) tea.Cmd {
@@ -1191,8 +1283,23 @@ func (m *Model) fetchOnlineSuggestions(query string) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		sugs, err := online.FetchSuggestions(query)
+		sugs, err := m.onlineRepo.Suggestions(query)
 		return onlineSuggestionsMsg{query: query, suggestions: sugs, err: err}
+	}
+}
+
+func (m *Model) fetchRecommendations() tea.Cmd {
+	taste := m.index.TasteProfile()
+	onlineProfile := online.TasteProfile{
+		TopArtists:  taste.TopArtists,
+		TopGenres:   taste.TopGenres,
+		TotalTracks: taste.TotalTracks,
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		recs, err := m.onlineRepo.RecommendForLibrary(ctx, onlineProfile, 20)
+		return onlineRecommendMsg{tracks: recs, err: err}
 	}
 }
 
@@ -1202,13 +1309,14 @@ func (m *Model) searchOnline(query string) tea.Cmd {
 	m.onlineView.ErrorMsg = ""
 	m.onlineView.InputMode = false
 	m.onlineView.HasSearched = true
+	m.onlineView.IsRecommended = false
 	m.onlineView.LastQuery = query
 	m.onlineView.Suggestions = nil
 	m.onlineView.SuggestionCursor = -1
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		tracks, err := online.SearchOnline(ctx, query, 25)
+		tracks, err := m.onlineRepo.Search(ctx, query, 25)
 		return onlineSearchMsg{query: query, tracks: tracks, err: err}
 	}
 }
@@ -1220,8 +1328,8 @@ func (m *Model) streamOnlineTrack(t online.OnlineTrack) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
-		filePath, art, err := online.ResolveAndCache(ctx, t, nil)
-		return onlineStreamMsg{track: t, filePath: filePath, artwork: art, err: err}
+		res, err := m.onlineRepo.ResolveStream(ctx, t, nil)
+		return onlineStreamMsg{track: t, result: res, err: err}
 	}
 }
 
@@ -1229,7 +1337,7 @@ func (m *Model) fetchRelatedOnlineTracks(track online.OnlineTrack) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		related, err := online.FetchRelatedTracks(ctx, track, 10)
+		related, err := m.onlineRepo.RelatedTracks(ctx, track, 10)
 		if err != nil || len(related) == 0 {
 			return nil
 		}
@@ -1242,7 +1350,7 @@ func (m *Model) fetchOnlineArtwork(track online.OnlineTrack) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		data, err := online.FetchArtwork(track.ArtworkURL)
+		data, err := m.onlineRepo.FetchArtwork(track.ArtworkURL)
 		if err != nil || len(data) == 0 {
 			return nil
 		}
@@ -1252,20 +1360,27 @@ func (m *Model) fetchOnlineArtwork(track online.OnlineTrack) tea.Cmd {
 
 func (m *Model) prebufferNextTrack() tea.Cmd {
 	next, ok := m.queue.PeekNext()
-	if !ok || !strings.HasPrefix(next.ID, "online_") || next.Path != "" {
+	if !ok || !strings.HasPrefix(next.ID, "online_") {
 		return nil
 	}
 	rawID := strings.TrimPrefix(next.ID, "online_")
 	ot := online.OnlineTrack{
-		ID:     rawID,
-		Title:  next.Title,
-		Artist: next.Artist,
-		Source: "youtube",
+		ID:       rawID,
+		Title:    next.Title,
+		Artist:   next.Artist,
+		Album:    next.Album,
+		Duration: next.Duration,
+		Year:     next.Year,
+		Genre:    next.Genre,
+		Source:   "youtube",
+	}
+	if _, _, found := m.onlineRepo.GetCachedTrack(ot); found {
+		return nil
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		online.PrebufferTrack(ctx, ot)
+		m.onlineRepo.Prebuffer(ctx, ot)
 		return nil
 	}
 }
@@ -1280,7 +1395,7 @@ func (m *Model) downloadOnlineTrack(track online.OnlineTrack) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		destFile, err := online.DownloadToLibrary(ctx, track, targetDir)
+		destFile, err := m.onlineRepo.Download(ctx, track, targetDir)
 		return onlineDownloadMsg{trackTitle: track.Title, path: destFile, err: err}
 	}
 }
@@ -1298,7 +1413,7 @@ func (m *Model) playOrStreamTrack(t audio.Track) tea.Cmd {
 			Genre:    t.Genre,
 			Source:   "youtube",
 		}
-		if cachedPath, art, found := online.GetCachedTrack(ot); found {
+		if cachedPath, art, found := m.onlineRepo.GetCachedTrack(ot); found {
 			t.Path = cachedPath
 			m.currentCover = art
 			m.npView.CoverData = art
@@ -1312,7 +1427,7 @@ func (m *Model) playOrStreamTrack(t audio.Track) tea.Cmd {
 }
 
 func (m *Model) playTrack(t audio.Track) tea.Cmd {
-	return func() tea.Msg {
+	loadCmd := func() tea.Msg {
 		if err := m.player.Load(t.Path); err != nil {
 			m.status = fmt.Sprintf("Error: %v", err)
 			return trackEndMsg{}
@@ -1332,6 +1447,28 @@ func (m *Model) playTrack(t audio.Track) tea.Cmd {
 		m.player.Play()
 		return tickMsg{}
 	}
+	return tea.Batch(loadCmd, m.prebufferNextTrack())
+}
+
+func (m *Model) playOnlineStream(t audio.Track, stream io.ReadSeekCloser) tea.Cmd {
+	loadCmd := func() tea.Msg {
+		if err := m.player.LoadStream(stream, "mp3"); err != nil {
+			m.status = fmt.Sprintf("Error: %v", err)
+			return trackEndMsg{}
+		}
+		m.currentTrack = &t
+		m.paused = false
+		m.position = 0
+		m.libView.PlayingID = t.ID
+		m.favView.PlayingID = t.ID
+		m.srchView.PlayingID = t.ID
+		m.plView.PlayingID = t.ID
+		m.onlineView.PlayingTrackID = strings.TrimPrefix(t.ID, "online_")
+		m.syncNPView()
+		m.player.Play()
+		return tickMsg{}
+	}
+	return tea.Batch(loadCmd, m.prebufferNextTrack())
 }
 
 func (m *Model) playCurrentQueueTrack() tea.Cmd {
@@ -1359,19 +1496,20 @@ func (m *Model) syncNPView() {
 
 func (m *Model) updateViewSizes() {
 	mainH := maxInt(m.height-3, 1)
-	m.libView.Width = m.width
+	maxW := maxInt(m.width-1, 1)
+	m.libView.Width = maxW
 	m.libView.Height = mainH
-	m.plView.Width = m.width
+	m.plView.Width = maxW
 	m.plView.Height = mainH
-	m.favView.Width = m.width
+	m.favView.Width = maxW
 	m.favView.Height = mainH
-	m.npView.Width = m.width
+	m.npView.Width = maxW
 	m.npView.Height = mainH
 }
 
 // View renders the entire TUI.
 func (m *Model) View() string {
-	if m.width == 0 {
+	if m.width == 0 || m.height == 0 {
 		return "Loading..."
 	}
 
@@ -1399,7 +1537,7 @@ func (m *Model) View() string {
 		)
 	}
 
-	// Strictly guarantee that the total output never exceeds the terminal height
+	// Strictly guarantee that the total output never exceeds the terminal height and no line wraps
 	lines := strings.Split(rendered, "\n")
 	if len(lines) > m.height {
 		lines = lines[:m.height]
@@ -1407,15 +1545,20 @@ func (m *Model) View() string {
 	for len(lines) < m.height {
 		lines = append(lines, "")
 	}
+	maxW := maxInt(m.width-1, 1)
+	for i, l := range lines {
+		lines[i] = views.Trunc(l, maxW)
+	}
 	return strings.Join(lines, "\n")
 }
 
 func (m *Model) renderTabs() string {
+	maxW := maxInt(m.width-1, 1)
 	var tabs []string
 	var labels []string
-	if m.width >= 75 {
+	if maxW >= 75 {
 		labels = []string{"[1] Library", "[2] Playlists", "[3] Favourites", "[4] Online", "[5] Now Playing"}
-	} else if m.width >= 55 {
+	} else if maxW >= 55 {
 		labels = []string{"[1]Lib", "[2]Lists", "[3]Favs", "[4]Online", "[5]Now"}
 	} else {
 		labels = []string{"1", "2", "3", "4", "5"}
@@ -1430,18 +1573,19 @@ func (m *Model) renderTabs() string {
 	}
 
 	title := ""
-	if m.width >= 75 {
+	if maxW >= 75 {
 		title = styles.TabLogo.Render("MUSE // AUDIO") + " "
-	} else if m.width >= 45 {
+	} else if maxW >= 45 {
 		title = styles.TabLogo.Render("MUSE") + " "
 	}
 
 	bar := title + strings.Join(tabs, " ")
-	return styles.TabBar.Width(m.width).MaxHeight(1).Render(bar)
+	return styles.TabBar.Width(maxW).MaxHeight(1).Render(bar)
 }
 
 func (m *Model) renderContent() string {
 	h := maxInt(m.height-3, 1)
+	maxW := maxInt(m.width-1, 1)
 
 	var content string
 	switch m.activeTab {
@@ -1452,7 +1596,7 @@ func (m *Model) renderContent() string {
 	case TabFavs:
 		content = m.favView.View()
 	case TabOnline:
-		content = m.onlineView.View(m.width, h)
+		content = m.onlineView.View(maxW, h)
 	case TabNowPlaying:
 		content = m.npView.View()
 	}
@@ -1465,12 +1609,13 @@ func (m *Model) renderContent() string {
 		lines = lines[:h]
 	}
 	for i, l := range lines {
-		lines[i] = views.Trunc(l, m.width)
+		lines[i] = views.Trunc(l, maxW)
 	}
 	return strings.Join(lines, "\n")
 }
 
 func (m *Model) renderStatusBar() string {
+	maxW := maxInt(m.width-1, 1)
 	isPlaying := m.currentTrack != nil && !m.paused
 	miniVU := views.MiniVU(m.tickCount, isPlaying)
 
@@ -1486,8 +1631,8 @@ func (m *Model) renderStatusBar() string {
 			fav = styles.FavHeart.Render("♥ ")
 		}
 
-		titleMax := maxInt(m.width*30/100, 10)
-		artistMax := maxInt(m.width*20/100, 8)
+		titleMax := maxInt(maxW*30/100, 10)
+		artistMax := maxInt(maxW*20/100, 8)
 		title := styles.TrackName.Render(views.Trunc(m.currentTrack.DisplayTitle(), titleMax))
 		artist := styles.ArtistName.Render(views.Trunc(m.currentTrack.Artist, artistMax))
 
@@ -1496,12 +1641,12 @@ func (m *Model) renderStatusBar() string {
 		if total > 0 {
 			ratio = float64(m.position) / float64(total)
 		}
-		barW := minInt(maxInt(m.width*20/100, 10), 24)
+		barW := minInt(maxInt(maxW*20/100, 10), 24)
 		prog := views.ProgressBar(ratio, barW, m.position, total)
 
-		if m.width >= 75 {
+		if maxW >= 75 {
 			left = fmt.Sprintf(" %s [%s] %s%s · %s  %s", miniVU, playStatus, fav, title, artist, prog)
-		} else if m.width >= 50 {
+		} else if maxW >= 50 {
 			left = fmt.Sprintf(" %s [%s] %s%s  %s", miniVU, playStatus, fav, title, prog)
 		} else {
 			left = fmt.Sprintf(" %s %s%s", miniVU, fav, title)
@@ -1510,17 +1655,18 @@ func (m *Model) renderStatusBar() string {
 		left = fmt.Sprintf(" %s %s", miniVU, styles.Muted.Render("STOPPED"))
 	}
 
-	if m.status != "" && m.width >= 60 {
-		statusMax := m.width - views.VisibleLen(left) - 6
+	if m.status != "" && maxW >= 60 {
+		statusMax := maxW - views.VisibleLen(left) - 6
 		if statusMax > 6 {
 			left += "  " + styles.Accent.Render("│ "+views.Trunc(m.status, statusMax))
 		}
 	}
 
-	return styles.StatusBar.Width(m.width).MaxHeight(1).Render(left)
+	return styles.StatusBar.Width(maxW).MaxHeight(1).Render(left)
 }
 
 func (m *Model) renderHelpBar() string {
+	maxW := maxInt(m.width-1, 1)
 	var hints string
 	if m.activeTab == TabOnline {
 		if m.onlineView.InputMode {
@@ -1528,17 +1674,17 @@ func (m *Model) renderHelpBar() string {
 		} else {
 			hints = "[1-5]view  [/]search  [Enter]stream  [d]download  [↑↓]navigate  [s]huffle  [a]add pl  [f]fav  [?]help  [q]uit"
 		}
-		return styles.HelpBar.Width(m.width).MaxHeight(1).Render(hints)
+		return styles.HelpBar.Width(maxW).MaxHeight(1).Render(hints)
 	}
 
 	isOnlineTrack := m.currentTrack != nil && strings.HasPrefix(m.currentTrack.ID, "online_")
-	if m.width >= 90 {
+	if maxW >= 90 {
 		if isOnlineTrack {
 			hints = "[1-5/Tab]view  [Space]play  [d]ownload  [s]huffle  [0-9/g]jump  [n/p]track  [←→]seek  [o]pen cover  [+/-]vol  [/]search  [?]help  [q]uit"
 		} else {
 			hints = "[1-5/Tab]view  [s]huffle/play  [0-9/g]jump  [Space]play  [n/p]track  [←→]seek  [o]pen cover  [+/-]vol  [/]search  [?]help  [q]uit"
 		}
-	} else if m.width >= 65 {
+	} else if maxW >= 65 {
 		if isOnlineTrack {
 			hints = "[1-5]views  [Space]play  [d]ownload  [s]huffle  [n/p]track  [←→]seek  [o]pen cover  [?]help  [q]uit"
 		} else {
@@ -1551,16 +1697,17 @@ func (m *Model) renderHelpBar() string {
 			hints = "[s]Shuffle  [Space]Play  [n/p]Track  [o]Cover  [?]Help  [q]Quit"
 		}
 	}
-	return styles.HelpBar.Width(m.width).MaxHeight(1).Render(hints)
+	return styles.HelpBar.Width(maxW).MaxHeight(1).Render(hints)
 }
 
 func (m *Model) renderSearch() string {
+	maxW := maxInt(m.width-1, 1)
 	var sb strings.Builder
-	sb.WriteString(styles.TabBar.Width(m.width).MaxHeight(1).Render(styles.Primary.Render(" SEARCH // LIBRARY")))
+	sb.WriteString(styles.TabBar.Width(maxW).MaxHeight(1).Render(styles.Primary.Render(" SEARCH // LIBRARY")))
 	sb.WriteString("\n")
-	sb.WriteString(m.srchView.View(m.width))
+	sb.WriteString(m.srchView.View(maxW))
 	sb.WriteString("\n")
-	sb.WriteString(styles.HelpBar.Width(m.width).MaxHeight(1).Render("[↑↓]navigate  [Enter]play  [Esc]close"))
+	sb.WriteString(styles.HelpBar.Width(maxW).MaxHeight(1).Render("[↑↓]navigate  [Enter]play  [Esc]close"))
 	return sb.String()
 }
 
