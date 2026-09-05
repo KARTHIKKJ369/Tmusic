@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/KARTHIKKJ369/Tmusic/internal/tui/styles"
 	"github.com/charmbracelet/lipgloss"
@@ -160,15 +161,23 @@ func Center(s string, width int) string {
 	return strings.Repeat(" ", pad) + s
 }
 
-// VisibleLen counts visible characters by stripping all ANSI escape sequences via lipgloss.
+// VisibleLen counts visible character cells by stripping ANSI escape sequences via lipgloss/ansi.
+// It also accounts for terminals (such as macOS Terminal) that do not compose Indic ligatures
+// (e.g. Malayalam, Devanagari, Tamil) and therefore advance the cursor for combining characters.
 func VisibleLen(s string) int {
-	return lipgloss.Width(s)
+	w := lipgloss.Width(s)
+	plain := ansi.Strip(s)
+	rc := utf8.RuneCountInString(plain)
+	if rc > w {
+		w = rc
+	}
+	return w
 }
 
 func Pad(s string, width int) string {
 	vLen := VisibleLen(s)
 	if vLen >= width {
-		return ansi.Truncate(s, width, "")
+		return Trunc(s, width)
 	}
 	return s + strings.Repeat(" ", width-vLen)
 }
@@ -179,10 +188,26 @@ func Trunc(s string, width int) string {
 	}
 	vLen := VisibleLen(s)
 	if vLen > width {
-		if width > 3 {
-			return ansi.Truncate(s, width, "...")
+		tail := "..."
+		tailLen := 3
+		if width <= 3 {
+			tail = ""
+			tailLen = 0
 		}
-		return ansi.Truncate(s, width, "")
+		targetW := width - tailLen
+
+		res := ansi.Truncate(s, width, tail)
+		plain := ansi.Strip(res)
+		if utf8.RuneCountInString(plain) > width {
+			plainRunes := []rune(plain)
+			if targetW > 0 && targetW < len(plainRunes) {
+				return string(plainRunes[:targetW]) + tail
+			}
+			if len(plainRunes) > width {
+				return string(plainRunes[:width])
+			}
+		}
+		return res
 	}
 	return s
 }

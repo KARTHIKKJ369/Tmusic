@@ -12,20 +12,21 @@ import (
 	"github.com/KARTHIKKJ369/Tmusic/internal/audio"
 	"github.com/KARTHIKKJ369/Tmusic/internal/config"
 	"github.com/KARTHIKKJ369/Tmusic/internal/library"
+	"github.com/KARTHIKKJ369/Tmusic/internal/online"
 	"github.com/KARTHIKKJ369/Tmusic/internal/playlist"
 	"github.com/KARTHIKKJ369/Tmusic/internal/tui"
 	"github.com/KARTHIKKJ369/Tmusic/internal/updater"
 )
 
 // version is injected at build time by GoReleaser via -ldflags "-X main.version=..."
-var version = "0.2.1"
+var version = "0.2.2"
 
 func init() {
 	if version == "" || version == "dev" {
 		if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
 			version = strings.TrimPrefix(bi.Main.Version, "v")
 		} else {
-			version = "0.2.1"
+			version = "0.2.2"
 		}
 	}
 }
@@ -338,7 +339,8 @@ func launchPlayer(forceRescan bool, autoPlayQuery string) {
 		fatalf("audio init: %v", err)
 	}
 
-	model := tui.New(cfg, idx, pm, player)
+	onlineRepo := online.NewRepository()
+	model := tui.New(cfg, idx, pm, player, onlineRepo)
 
 	// If autoPlayQuery is provided or user asked to play, trigger autoplay
 	if autoPlayQuery != "" {
@@ -391,7 +393,8 @@ func launchPlayerOnline(query string) {
 		fatalf("audio init: %v", err)
 	}
 
-	model := tui.New(cfg, idx, pm, player)
+	onlineRepo := online.NewRepository()
+	model := tui.New(cfg, idx, pm, player, onlineRepo)
 	model.SetOnlineMode(query)
 
 	p := tea.NewProgram(

@@ -22,6 +22,7 @@ type OnlineView struct {
 	LoadingMsg       string
 	ErrorMsg         string
 	PlayingTrackID   string
+	IsRecommended    bool
 	Suggestions      []string
 	SuggestionCursor int // -1 when none selected
 }
@@ -47,16 +48,13 @@ func (v *OnlineView) MoveUp() {
 	}
 }
 
-// MoveDown moves the track selection down, constrained by visible window.
-func (v *OnlineView) MoveDown(visibleHeight int) {
+// MoveDown moves the track selection down.
+func (v *OnlineView) MoveDown() {
 	if len(v.Tracks) == 0 {
 		return
 	}
 	if v.Cursor < len(v.Tracks)-1 {
 		v.Cursor++
-		if v.Cursor >= v.ScrollOffset+visibleHeight {
-			v.ScrollOffset = v.Cursor - visibleHeight + 1
-		}
 	}
 }
 
@@ -102,10 +100,10 @@ func (v *OnlineView) Selected() *online.OnlineTrack {
 
 // View renders the Online search and results interface.
 func (v *OnlineView) View(width, height int) string {
-	if width < 30 {
-		width = 30
+	if width < 10 {
+		width = 10
 	}
-	var sb strings.Builder
+	var lines []string
 
 	// 1. Sleek Search Bar Header
 	prompt := styles.Primary.Bold(true).Render(" ♫ ONLINE SEARCH: ")
@@ -129,13 +127,16 @@ func (v *OnlineView) View(width, height int) string {
 			queryDisplay = styles.Accent.Bold(true).Render("\"" + v.LastQuery + "\"")
 		} else if v.Query != "" {
 			queryDisplay = styles.Accent.Bold(true).Render("\"" + v.Query + "\"")
+		} else if v.IsRecommended {
+			queryDisplay = styles.Accent.Bold(true).Render("Recommended for You")
 		} else {
 			queryDisplay = styles.Muted.Render("(press [/] to search)")
 		}
 		hints := styles.Muted.Render("  [/] Search   [Enter] Stream   [d] Download   [a] Add to Playlist   [s] Shuffle")
 		searchBar = prompt + queryDisplay + hints
 	}
-	sb.WriteString(Trunc(searchBar, width) + "\n\n")
+	lines = append(lines, Trunc(searchBar, width))
+	lines = append(lines, "")
 
 	// 2. Suggestions Dropdown (when typing and suggestions are available)
 	if v.InputMode && len(v.Suggestions) > 0 {
@@ -147,19 +148,18 @@ func (v *OnlineView) View(width, height int) string {
 			availSugs = 6
 		}
 		sugHeader := styles.Muted.Render("  SUGGESTIONS (↑↓ navigate, Tab autocomplete, Enter search):")
-		sb.WriteString(Trunc(sugHeader, width) + "\n")
+		lines = append(lines, Trunc(sugHeader, width))
 		for i := 0; i < availSugs; i++ {
 			sug := v.Suggestions[i]
-			var line string
+			var rendered string
 			if i == v.SuggestionCursor {
-				line = styles.ListItemSelected.Render(fmt.Sprintf("  ▸ %-*s", width-8, sug))
+				rendered = styles.ListItemSelected.MaxWidth(width).MaxHeight(1).Render(Trunc(fmt.Sprintf("  ▸ %s", sug), width-4))
 			} else {
-				line = styles.ListItem.Render(fmt.Sprintf("    %-*s", width-8, sug))
+				rendered = styles.ListItem.MaxWidth(width).MaxHeight(1).Render(Trunc(fmt.Sprintf("    %s", sug), width-4))
 			}
-			sb.WriteString(Trunc(line, width) + "\n")
+			lines = append(lines, Trunc(rendered, width))
 		}
-		sb.WriteString("\n")
-		return sb.String()
+		return finishLines(lines, width, height)
 	}
 
 	// 3. Loading State
@@ -168,8 +168,8 @@ func (v *OnlineView) View(width, height int) string {
 		if msg == "" {
 			msg = "Searching YouTube Music..."
 		}
-		sb.WriteString(styles.Accent.Render(fmt.Sprintf("  ⠋ %s\n", msg)))
-		return sb.String()
+		lines = append(lines, Trunc(styles.Accent.Render(fmt.Sprintf("  ⠋ %s", msg)), width))
+		return finishLines(lines, width, height)
 	}
 
 	// 4. Error State (never shown when search bar is empty or in input mode)
@@ -181,42 +181,65 @@ func (v *OnlineView) View(width, height int) string {
 		if idx := strings.Index(cleanErr, "\n"); idx != -1 {
 			cleanErr = cleanErr[:idx]
 		}
-		sb.WriteString(styles.Danger.Render(fmt.Sprintf("  ⚠ %s\n\n", cleanErr)))
+		lines = append(lines, Trunc(styles.Danger.Render(fmt.Sprintf("  ⚠ %s", cleanErr)), width))
+		lines = append(lines, "")
 		if len(v.Tracks) == 0 {
-			sb.WriteString(styles.Muted.Render("  Press [/] to try another search.\n"))
-			return sb.String()
+			lines = append(lines, Trunc(styles.Muted.Render("  Press [/] to try another search."), width))
+			return finishLines(lines, width, height)
 		}
 	}
 
 	// 5. Empty Results or Initial Screen
 	if len(v.Tracks) == 0 {
 		if v.HasSearched && v.LastQuery != "" && !v.InputMode && v.ErrorMsg == "" {
-			sb.WriteString(styles.Muted.Render(fmt.Sprintf("  No tracks found matching \"%s\". Press [/] to try another search.\n\n", v.LastQuery)))
+			lines = append(lines, Trunc(styles.Muted.Render(fmt.Sprintf("  No tracks found matching \"%s\". Press [/] to try another search.", v.LastQuery)), width))
 		}
-		return sb.String()
+		return finishLines(lines, width, height)
 	}
 
 	// 6. Results Table
 	availRows := height - 4
-	if availRows < 4 {
-		availRows = 4
+	if availRows < 1 {
+		availRows = 1
 	}
 
-	tableW := width - 8
-	if tableW < 30 {
-		tableW = 30
+	// Clamp cursor within bounds
+	if v.Cursor < 0 {
+		v.Cursor = 0
+	}
+	if len(v.Tracks) > 0 && v.Cursor >= len(v.Tracks) {
+		v.Cursor = len(v.Tracks) - 1
 	}
 
-	titleW := tableW * 44 / 100
+	// Dynamic scroll offset so cursor is always visible
+	if v.Cursor < v.ScrollOffset {
+		v.ScrollOffset = v.Cursor
+	}
+	if v.Cursor >= v.ScrollOffset+availRows {
+		v.ScrollOffset = v.Cursor - availRows + 1
+	}
+	if v.ScrollOffset+availRows > len(v.Tracks) && len(v.Tracks) > availRows {
+		v.ScrollOffset = len(v.Tracks) - availRows
+	}
+	if v.ScrollOffset < 0 {
+		v.ScrollOffset = 0
+	}
+
+	availW := width - 14
+	if availW < 24 {
+		availW = 24
+	}
+
+	titleW := availW * 40 / 100
 	if titleW < 12 {
 		titleW = 12
 	}
-	artistW := tableW * 30 / 100
+	artistW := availW * 28 / 100
 	if artistW < 10 {
 		artistW = 10
 	}
 	durW := 6
-	albumW := tableW - titleW - artistW - durW - 6
+	albumW := availW - titleW - artistW - durW - 4
 	if albumW < 8 {
 		albumW = 8
 	}
@@ -228,7 +251,7 @@ func (v *OnlineView) View(width, height int) string {
 		Pad("ALBUM", albumW),
 		Pad("TIME", durW),
 	)
-	sb.WriteString(styles.Muted.Render(Trunc(header, width)) + "\n")
+	lines = append(lines, styles.Muted.MaxWidth(width).MaxHeight(1).Render(Trunc(header, width-4)))
 
 	endIdx := v.ScrollOffset + availRows
 	if endIdx > len(v.Tracks) {
@@ -245,12 +268,19 @@ func (v *OnlineView) View(width, height int) string {
 
 		isPlaying := v.PlayingTrackID != "" && v.PlayingTrackID == t.ID
 
+		var rowStyle lipgloss.Style
 		var prefix string
-		if isPlaying {
+		if isPlaying && i == v.Cursor {
+			rowStyle = styles.ListItemSelected
+			prefix = styles.Accent.Render("▶ ")
+		} else if isPlaying {
+			rowStyle = styles.ListItemPlaying
 			prefix = styles.Accent.Render("▶ ")
 		} else if i == v.Cursor {
+			rowStyle = styles.ListItemSelected
 			prefix = styles.Primary.Render("● ")
 		} else {
+			rowStyle = styles.ListItem
 			prefix = "  "
 		}
 
@@ -262,18 +292,33 @@ func (v *OnlineView) View(width, height int) string {
 			Pad(durStr, durW),
 		)
 
-		if i == v.Cursor {
-			sb.WriteString(styles.ListItemSelected.Render(Trunc(line, width-2)) + "\n")
-		} else {
-			sb.WriteString(styles.ListItem.Render(Trunc(line, width-2)) + "\n")
-		}
+		renderedRow := rowStyle.MaxWidth(width).MaxHeight(1).Render(Trunc(line, width-4))
+		lines = append(lines, Trunc(renderedRow, width))
 	}
 
 	// Footer indicator
 	if len(v.Tracks) > availRows {
-		footer := fmt.Sprintf("  Showing %d-%d of %d online results   [Enter] Stream   [d] Download to Library", v.ScrollOffset+1, endIdx, len(v.Tracks))
-		sb.WriteString(styles.Muted.Render(Trunc(footer, width)))
+		label := "online results"
+		if v.IsRecommended {
+			label = "recommendations"
+		}
+		footer := fmt.Sprintf("  Showing %d-%d of %d %s   [Enter] Stream   [d] Download to Library", v.ScrollOffset+1, endIdx, len(v.Tracks), label)
+		lines = append(lines, styles.Muted.MaxWidth(width).MaxHeight(1).Render(Trunc(footer, width)))
 	}
 
-	return sb.String()
+	return finishLines(lines, width, height)
 }
+
+func finishLines(lines []string, width, height int) string {
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i, l := range lines {
+		lines[i] = Trunc(l, width)
+	}
+	return strings.Join(lines, "\n")
+}
+

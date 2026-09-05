@@ -1,6 +1,7 @@
 package audio
 
 import (
+	"io"
 	"sync"
 	"time"
 
@@ -62,7 +63,23 @@ func (p *Player) Load(path string) error {
 	if err != nil {
 		return err
 	}
+	return p.loadDecodedLocked(d)
+}
 
+// LoadStream opens an io.ReadSeekCloser stream ready to play (does not start playback).
+func (p *Player) LoadStream(stream io.ReadSeekCloser, format string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stopLocked()
+
+	d, err := decodeSeekCloser(stream, format)
+	if err != nil {
+		return err
+	}
+	return p.loadDecodedLocked(d)
+}
+
+func (p *Player) loadDecodedLocked(d decoded) error {
 	// Resample if needed.
 	var stream beep.StreamSeekCloser = d.stream
 	if d.format.SampleRate != targetSampleRate {
