@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/KARTHIKKJ369/Tmusic/internal/tui/styles"
 	"github.com/charmbracelet/lipgloss"
@@ -242,4 +243,40 @@ func ParseTimeJump(input string, total time.Duration) (time.Duration, error) {
 	}
 
 	return 0, fmt.Errorf("invalid time format (use e.g. 1:30, 90s, 50%%)")
+}
+
+// DeleteWord deletes the last word from a string, adhering to readline and macOS Option+Backspace semantics.
+// It trims trailing whitespace, then deletes backwards across the contiguous run of either alphanumeric
+// runes or symbol/punctuation runes.
+func DeleteWord(s string) string {
+	r := []rune(s)
+	if len(r) == 0 {
+		return ""
+	}
+	i := len(r) - 1
+
+	// Step 1: Skip trailing whitespace
+	for i >= 0 && unicode.IsSpace(r[i]) {
+		i--
+	}
+	if i < 0 {
+		return ""
+	}
+
+	// Step 2: Determine if trailing non-space rune is alphanumeric or punctuation/symbol
+	isAlphaNum := unicode.IsLetter(r[i]) || unicode.IsDigit(r[i])
+
+	// Step 3: Delete the contiguous cluster of identical category (alphanumeric vs symbol)
+	for i >= 0 {
+		if unicode.IsSpace(r[i]) {
+			break
+		}
+		currAlphaNum := unicode.IsLetter(r[i]) || unicode.IsDigit(r[i])
+		if currAlphaNum != isAlphaNum {
+			break
+		}
+		i--
+	}
+
+	return string(r[:i+1])
 }

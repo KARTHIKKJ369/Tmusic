@@ -172,16 +172,25 @@ func (v *OnlineView) View(width, height int) string {
 		return sb.String()
 	}
 
-	// 4. Error State
-	if v.ErrorMsg != "" {
-		sb.WriteString(styles.Danger.Render(fmt.Sprintf("  ⚠ %s\n\n", v.ErrorMsg)))
-		sb.WriteString(styles.Muted.Render("  Press [/] to try another search.\n"))
-		return sb.String()
+	// 4. Error State (never shown when search bar is empty or in input mode)
+	if strings.TrimSpace(v.Query) == "" && strings.TrimSpace(v.LastQuery) == "" {
+		v.ErrorMsg = ""
+	}
+	if v.ErrorMsg != "" && !v.InputMode && (strings.TrimSpace(v.Query) != "" || strings.TrimSpace(v.LastQuery) != "") {
+		cleanErr := v.ErrorMsg
+		if idx := strings.Index(cleanErr, "\n"); idx != -1 {
+			cleanErr = cleanErr[:idx]
+		}
+		sb.WriteString(styles.Danger.Render(fmt.Sprintf("  ⚠ %s\n\n", cleanErr)))
+		if len(v.Tracks) == 0 {
+			sb.WriteString(styles.Muted.Render("  Press [/] to try another search.\n"))
+			return sb.String()
+		}
 	}
 
 	// 5. Empty Results or Initial Screen
 	if len(v.Tracks) == 0 {
-		if v.HasSearched && v.LastQuery != "" && !v.InputMode {
+		if v.HasSearched && v.LastQuery != "" && !v.InputMode && v.ErrorMsg == "" {
 			sb.WriteString(styles.Muted.Render(fmt.Sprintf("  No tracks found matching \"%s\". Press [/] to try another search.\n\n", v.LastQuery)))
 		}
 		return sb.String()
