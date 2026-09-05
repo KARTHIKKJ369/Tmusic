@@ -19,14 +19,14 @@ import (
 )
 
 // version is injected at build time by GoReleaser via -ldflags "-X main.version=..."
-var version = "0.2.2"
+var version = "0.2.3"
 
 func init() {
 	if version == "" || version == "dev" {
 		if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
 			version = strings.TrimPrefix(bi.Main.Version, "v")
 		} else {
-			version = "0.2.2"
+			version = "0.2.3"
 		}
 	}
 }
