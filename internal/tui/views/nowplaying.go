@@ -90,7 +90,11 @@ func (v *NowPlayingView) View() string {
 		}
 		metaParts = append(metaParts, styles.Subtext.Render(Trunc(albumStr, 30)))
 	}
-	metaParts = append(metaParts, FormatBadge(v.Track.Path))
+	if strings.HasPrefix(v.Track.ID, "online_") {
+		metaParts = append(metaParts, styles.BadgeAccent.Render("ONLINE [d]ownload"))
+	} else {
+		metaParts = append(metaParts, FormatBadge(v.Track.Path))
+	}
 	if v.IsFav {
 		metaParts = append(metaParts, styles.FavHeart.Render("♥"))
 	}

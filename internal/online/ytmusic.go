@@ -88,7 +88,11 @@ func SearchYouTube(ctx context.Context, query string, limit int) ([]OnlineTrack,
 		return nil, fmt.Errorf("youtube search: %w", err)
 	}
 
-	lines := strings.Split(string(out), "\n")
+	return parseYouTubeTracks(string(out)), nil
+}
+
+func parseYouTubeTracks(out string) []OnlineTrack {
+	lines := strings.Split(out, "\n")
 	var tracks []OnlineTrack
 
 	for _, line := range lines {
@@ -129,7 +133,7 @@ func SearchYouTube(ctx context.Context, query string, limit int) ([]OnlineTrack,
 		})
 	}
 
-	return tracks, nil
+	return tracks
 }
 
 // CleanYouTubeMetadata strips noisy tags like "Video Song", "Official Audio", etc.
@@ -138,17 +142,18 @@ func CleanYouTubeMetadata(rawTitle, uploader string) (string, string) {
 	artist := uploader
 
 	noise := []string{
-		" (Official Video)", " [Official Video]",
-		" (Official Audio)", " [Official Audio]",
-		" (Official Music Video)", " [Official Music Video]",
-		" (Lyrical Video)", " [Lyrical Video]",
-		" (4K Video Song)", " [4K Video Song]",
-		" (Video Song)", " [Video Song]",
-		" (Full Song)", " [Full Song]",
-		" (Remastered)", " [Remastered]",
-		" (Audio)", " [Audio]",
-		" Video Song", " Full Song", " Lyrical Video",
+		"Official Music Video", "Official Audio", "Official Video",
+		"Lyric Video", "Full Video", "Video Song", "Audio Track",
+		"HD Video", "4K Video", "Full Song", "Lyrical Video",
+		"(Official Music Video)", "[Official Music Video]",
+		"(Official Audio)", "[Official Audio]",
+		"(Official Video)", "[Official Video]",
+		"(Video Song)", "[Video Song]",
+		"(Audio)", "[Audio]",
+		"(Lyric Video)", "[Lyric Video]",
+		"(Full Song)", "[Full Song]",
 	}
+
 	for _, n := range noise {
 		title = strings.ReplaceAll(title, n, "")
 		title = strings.ReplaceAll(title, strings.ToLower(n), "")
@@ -175,26 +180,49 @@ func CleanYouTubeMetadata(rawTitle, uploader string) (string, string) {
 }
 
 // FetchRelatedTracks searches for songs related to the current track for continuous playback.
-// It queries artist radio / playlist and filters out duplicate versions or covers of the current song.
+// It queries the official YouTube Automix Radio playlist (list=RD<video_id>) for genuine contextual
+// recommendations (matching genre, artist, era, mood), falling back to artist radio search.
 func FetchRelatedTracks(ctx context.Context, track OnlineTrack, limit int) ([]OnlineTrack, error) {
 	if limit <= 0 {
 		limit = 10
 	}
-	var query string
-	if track.Artist != "" && track.Artist != "YouTube Music" {
-		query = fmt.Sprintf("%s songs playlist", track.Artist)
-	} else {
-		query = fmt.Sprintf("%s similar songs playlist", track.Title)
+
+	var rawTracks []OnlineTrack
+
+	// 1. Primary & Best Approach: Official YouTube Automix Radio (list=RD<id>)
+	if track.Source == "youtube" && len(track.ID) >= 8 && !strings.HasPrefix(track.ID, "itunes_") {
+		radioURL := fmt.Sprintf("https://www.youtube.com/watch?v=%s&list=RD%s", track.ID, track.ID)
+		cmd := exec.CommandContext(ctx, "yt-dlp",
+			"--flat-playlist",
+			"--playlist-end", strconv.Itoa(limit+8),
+			"--no-warnings",
+			"--print", "%(id)s\t%(title)s\t%(uploader)s\t%(duration)s",
+			radioURL,
+		)
+		out, err := cmd.Output()
+		if err == nil && len(out) > 0 {
+			rawTracks = parseYouTubeTracks(string(out))
+		}
 	}
 
-	results, err := SearchYouTube(ctx, query, limit+6)
-	if err != nil {
-		return nil, err
+	// 2. Fallback: Search based on playing track's artist and title
+	if len(rawTracks) == 0 {
+		var query string
+		if track.Artist != "" && track.Artist != "YouTube Music" {
+			query = fmt.Sprintf("%s %s Radio Mix", track.Artist, track.Title)
+		} else {
+			query = fmt.Sprintf("%s similar songs playlist", track.Title)
+		}
+		var err error
+		rawTracks, err = SearchYouTube(ctx, query, limit+6)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	normCurrent := strings.ToLower(strings.TrimSpace(track.Title))
 	var filtered []OnlineTrack
-	for _, t := range results {
+	for _, t := range rawTracks {
 		normTitle := strings.ToLower(strings.TrimSpace(t.Title))
 		// Filter out identical track ID or songs whose title contains the current track's title (e.g. covers, karaoke, remixes)
 		if t.ID == track.ID {
