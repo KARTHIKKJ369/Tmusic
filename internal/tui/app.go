@@ -240,6 +240,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.onlineView.Loading = false
 		m.onlineView.HasSearched = true
 		m.onlineView.IsRecommended = false
+		m.onlineView.InputMode = false
 		m.onlineView.LastQuery = msg.query
 		if msg.err != nil {
 			m.onlineView.ErrorMsg = msg.err.Error()
@@ -331,6 +332,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Year:     msg.track.Year,
 			Genre:    msg.track.Genre,
 		}
+		m.currentTrack = &newTrack
 		m.onlineView.PlayingTrackID = msg.track.ID
 		if len(msg.result.Artwork) > 0 {
 			m.currentCover = msg.result.Artwork
@@ -340,8 +342,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Queue ONLY the selected track (do not dump search results into queue)
 		m.queue = playlist.NewQueue([]audio.Track{newTrack})
 		m.queue.JumpTo(newTrack.ID)
-		// Stay on current tab so user can browse search results and continue searching
+		m.activeTab = TabNowPlaying
 		m.status = fmt.Sprintf("PLAYING: %s - %s (Online)", newTrack.Artist, newTrack.Title)
+		m.syncNPView()
 
 		var playCmd tea.Cmd
 		if msg.result.Stream != nil {
@@ -351,6 +354,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, tea.Batch(
+			tea.ClearScreen,
 			playCmd,
 			m.fetchRelatedOnlineTracks(msg.track),
 			m.fetchOnlineArtwork(msg.track),
@@ -923,7 +927,8 @@ func (m *Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if t, ok := m.srchView.Selected(); ok {
 			m.showSearch = false
 			m.srchView.Active = false
-			return m, m.playTrack(t)
+			m.activeTab = TabNowPlaying
+			return m, tea.Batch(tea.ClearScreen, m.playTrack(t))
 		}
 	case "up":
 		m.srchView.MoveUp()
@@ -1015,7 +1020,8 @@ func (m *Model) playSelected() tea.Cmd {
 			} else {
 				m.queue.JumpTo(t.ID)
 			}
-			return m.playTrack(t)
+			m.activeTab = TabNowPlaying
+			return tea.Batch(tea.ClearScreen, m.playTrack(t))
 		}
 	case TabFavs:
 		favs := m.favView.FavTracks()
@@ -1027,7 +1033,8 @@ func (m *Model) playSelected() tea.Cmd {
 				} else {
 					m.queue.JumpTo(t.ID)
 				}
-				return m.playTrack(t)
+				m.activeTab = TabNowPlaying
+				return tea.Batch(tea.ClearScreen, m.playTrack(t))
 			}
 		}
 	case TabPlaylists:
@@ -1049,11 +1056,12 @@ func (m *Model) playSelected() tea.Cmd {
 			} else {
 				m.queue.JumpTo(startTrack.ID)
 			}
-			return m.playTrack(startTrack)
+			m.activeTab = TabNowPlaying
+			return tea.Batch(tea.ClearScreen, m.playTrack(startTrack))
 		}
 	case TabOnline:
 		if t := m.onlineView.Selected(); t != nil {
-			return m.streamOnlineTrack(*t)
+			return tea.Batch(tea.ClearScreen, m.streamOnlineTrack(*t))
 		}
 	}
 	return nil
@@ -1154,6 +1162,10 @@ func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.onlineView.SuggestionDown()
 			return m, nil
 		}
+		if len(m.onlineView.Tracks) > 0 {
+			m.onlineView.InputMode = false
+			return m, tea.ClearScreen
+		}
 
 	case tea.KeyTab:
 		if sug := m.onlineView.SelectedSuggestion(); sug != "" {
@@ -1168,13 +1180,13 @@ func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if target == "" {
 			target = strings.TrimSpace(m.onlineView.Query)
 		}
+		m.onlineView.InputMode = false
 		if target != "" {
 			m.onlineView.Query = target
 			m.onlineView.Suggestions = nil
 			m.onlineView.SuggestionCursor = -1
 			return m, tea.Batch(tea.ClearScreen, m.searchOnline(target))
 		}
-		m.onlineView.InputMode = false
 		return m, tea.ClearScreen
 
 	case tea.KeyBackspace:
@@ -1214,6 +1226,10 @@ func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.onlineView.SuggestionDown()
 				return m, nil
 			}
+			if len(m.onlineView.Tracks) > 0 {
+				m.onlineView.InputMode = false
+				return m, tea.ClearScreen
+			}
 		case "tab":
 			if sug := m.onlineView.SelectedSuggestion(); sug != "" {
 				m.onlineView.Query = sug
@@ -1225,14 +1241,14 @@ func (m *Model) handleOnlineInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if target == "" {
 				target = strings.TrimSpace(m.onlineView.Query)
 			}
+			m.onlineView.InputMode = false
 			if target != "" {
 				m.onlineView.Query = target
 				m.onlineView.Suggestions = nil
 				m.onlineView.SuggestionCursor = -1
-				return m, m.searchOnline(target)
+				return m, tea.Batch(tea.ClearScreen, m.searchOnline(target))
 			}
-			m.onlineView.InputMode = false
-			return m, nil
+			return m, tea.ClearScreen
 		case "esc":
 			m.onlineView.InputMode = false
 			m.onlineView.Suggestions = nil
@@ -1322,9 +1338,26 @@ func (m *Model) searchOnline(query string) tea.Cmd {
 }
 
 func (m *Model) streamOnlineTrack(t online.OnlineTrack) tea.Cmd {
+	m.player.Stop()
 	m.onlineView.Loading = true
 	m.onlineView.LoadingMsg = fmt.Sprintf("Buffering \"%s - %s\"...", t.Artist, t.Title)
 	m.status = fmt.Sprintf("ONLINE: Buffering %s - %s...", t.Artist, t.Title)
+
+	// Immediately set active track and move to Now Playing tab
+	placeholder := audio.Track{
+		ID:       fmt.Sprintf("online_%s", t.ID),
+		Title:    t.Title,
+		Artist:   t.Artist,
+		Album:    t.Album,
+		Duration: t.Duration,
+		Year:     t.Year,
+		Genre:    t.Genre,
+	}
+	m.currentTrack = &placeholder
+	m.activeTab = TabNowPlaying
+	m.onlineView.PlayingTrackID = t.ID
+	m.syncNPView()
+
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
@@ -1418,12 +1451,14 @@ func (m *Model) playOrStreamTrack(t audio.Track) tea.Cmd {
 			m.currentCover = art
 			m.npView.CoverData = art
 			m.currentTrack = &t
+			m.activeTab = TabNowPlaying
 			m.syncNPView()
-			return tea.Batch(m.playTrack(t), m.prebufferNextTrack())
+			return tea.Batch(tea.ClearScreen, m.playTrack(t), m.prebufferNextTrack())
 		}
-		return m.streamOnlineTrack(ot)
+		return tea.Batch(tea.ClearScreen, m.streamOnlineTrack(ot))
 	}
-	return m.playTrack(t)
+	m.activeTab = TabNowPlaying
+	return tea.Batch(tea.ClearScreen, m.playTrack(t))
 }
 
 func (m *Model) playTrack(t audio.Track) tea.Cmd {

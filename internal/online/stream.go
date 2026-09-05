@@ -314,7 +314,8 @@ func ResolveStream(ctx context.Context, track OnlineTrack, onStatus func(string)
 	// Progressive stream from active partial file
 	readF, err := os.Open(job.partFile)
 	if err == nil {
-		pfs := NewProgressiveFileStream(ctx, nil, readF, job.done, &job.err, nil)
+		streamCtx, streamCancel := context.WithCancel(context.Background())
+		pfs := NewProgressiveFileStream(streamCtx, streamCancel, readF, job.done, &job.err, nil)
 		artData, _ = os.ReadFile(artCacheFile)
 		return StreamResult{
 			Track:   track,

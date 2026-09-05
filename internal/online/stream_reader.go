@@ -73,11 +73,14 @@ func (p *ProgressiveFileStream) Read(b []byte) (int, error) {
 		select {
 		case <-p.writerDone:
 			p.mu.Lock()
-			defer p.mu.Unlock()
 			if p.writerErr != nil && *p.writerErr != nil {
-				return 0, *p.writerErr
+				err := *p.writerErr
+				p.mu.Unlock()
+				return 0, err
 			}
-			return p.file.Read(b)
+			n, err := p.file.Read(b)
+			p.mu.Unlock()
+			return n, err
 		case <-time.After(25 * time.Millisecond):
 		}
 	}
